@@ -32,6 +32,11 @@ Test Runner ──> model outputs ──> Judge Panel ──> verdicts + consens
                                     └─ Heuristic (deterministic, in-process)
 ```
 
+Generation and judging are **two separate passes** writing to two separate
+files (`results/model_outputs.jsonl` then `results/model_verdicts.jsonl`), so
+expensive test-model inference is done once and can be re-judged — or skipped
+entirely (see [Generate outputs only](#generate-outputs-only-no-judges)).
+
 Every judge — remote or local — implements the same
 `Judge.evaluate(test_id, model_output, criteria) -> Verdict` contract, so the
 panel calls Claude, a local vLLM model, or the heuristic baseline through
@@ -69,34 +74,123 @@ tests/                     # unit tests for the pure-Python components
 ## Setup
 
 ```bash
+# 1. Core install (pure-Python wheels; installs cleanly on every platform).
 pip install -r requirements.txt
 
-# Local model serving — pick one (PRD "Decision 1"):
-#   Ollama (recommended on Apple Silicon)
-brew install ollama && ollama pull mistral:7b && ollama pull llama2:7b
-#   or vLLM (more control)
-pip install vllm
+# 2. Local model serving — pick ONE backend (PRD "Decision 1").
+#    Neither is a hard dependency; the harness shells out to `ollama` / `vllm`.
+#
+#    Ollama (recommended on Apple Silicon; auto-managed by the harness):
+brew install ollama
+#    or vLLM (more control; you start the servers yourself — see Usage):
+pip install "vllm>=0.3.0"
 
-# API keys for remote judges
-export ANTHROPIC_API_KEY=...
-export OPENAI_API_KEY=...
+# 3. API keys for the remote judges (only needed if you run those judges).
+export ANTHROPIC_API_KEY=...   # Claude judge
+export OPENAI_API_KEY=...       # GPT-4o judge
 ```
+
+You do **not** need to pre-`ollama pull` the models — when a test model uses the
+Ollama backend, `harness/model_loader.py` starts the `ollama serve` daemon (if
+it isn't already up) and pulls the model tag on demand.
 
 ## Usage
 
+The entrypoint is `harness/evaluator.py`. Model ids come from
+`config/models.yaml` (e.g. `mistral-7b-4bit`, `llama-2-7b-4bit`); judge subsets
+come from `config/judges.yaml`.
+
+### Full run: generate outputs, then judge
+
 ```bash
-# Start local vLLM judge servers (foreground; Ctrl-C to stop)
-python harness/vllm_server_manager.py start
+# Ollama-backed test model — no server to start by hand:
+python harness/evaluator.py --models mistral-7b-4bit --judges all --prefer-engine ollama
 
-# Generate outputs for a model, then judge with the full panel
+# vLLM-backed test model — start the local server(s) FIRST (see below):
 python harness/evaluator.py --models mistral-7b-4bit --judges all
+```
 
-# Or judge previously-generated outputs with a cheap (API-only) subset
+`--judges` selects a preset: `all` (every enabled judge), `cheap` (priority ≤ 1,
+i.e. the remote API judges only), or `pilot`.
+
+### Judge previously-generated outputs
+
+```bash
 python harness/evaluator.py --outputs results/model_outputs.jsonl --judges cheap
 ```
 
-Results are written to `results/model_verdicts.jsonl` (one row per test/model
-with each judge's verdict plus a placeholder consensus).
+### Generate outputs only (no judges)
+
+To run the eval questions through a model **without** invoking the judge panel,
+pass `--no-judge`:
+
+```bash
+python harness/evaluator.py --models mistral-7b-4bit --no-judge
+```
+
+This runs the suite against the model and writes only
+`results/model_outputs.jsonl` (one row per test/model — prompt, category,
+criteria, raw model output). No judge is built, so **no API keys and no judge
+servers are required**. `--no-judge` requires `--models` (there is nothing to
+generate otherwise).
+
+Results of a full run are written to `results/model_verdicts.jsonl` (one row per
+test/model with each judge's verdict plus a placeholder consensus).
+
+## Choosing the serving backend: Ollama vs vLLM
+
+The backend for each **model under test** is set per-model in
+`config/models.yaml` (it is YAML, not JSON) under `serving.engine`. To load the
+local models with **Ollama instead of vLLM**, edit that field for each
+`local_models` entry:
+
+```yaml
+local_models:
+  - id: "mistral-7b-4bit"
+    checkpoint: "unsloth/Mistral-7B-v0.3-GGUF"
+    serving:
+      engine: "ollama"          # was: "vllm"
+      vllm_port: 8000
+      ollama_tag: "mistral:7b"  # tag Ollama pulls/serves
+```
+
+This **is manual** — you edit the config file. The `ollama_tag` is already
+present for the shipped models, so switching `engine` is the only change needed.
+
+> **Note on `--prefer-engine`.** The CLI accepts `--prefer-engine {ollama,vllm}`,
+> but a model's `serving.engine` in `config/models.yaml` currently takes
+> precedence, so the flag does not override a model that is pinned to a specific
+> engine. Treat editing `serving.engine` as the source of truth.
+
+### Do I have to start the servers manually?
+
+It depends on the backend:
+
+| Backend | Who starts the server? |
+| --- | --- |
+| **Ollama** | **Automatic.** `model_loader.py` starts the `ollama serve` daemon (if down) and pulls the tag on first use. Nothing to launch by hand. |
+| **vLLM** | **Manual.** The harness does **not** start vLLM in-process. `VLLMModel.generate` just POSTs to `http://localhost:<port>/v1/completions` and assumes a server is already listening there. |
+
+For the vLLM path, start the servers yourself before generating:
+
+```bash
+# Starts a vLLM server for every local_models entry whose serving.engine is
+# "vllm", on its configured vllm_port. Runs in the FOREGROUND; Ctrl-C stops
+# them (the servers live only as long as this process).
+python harness/vllm_server_manager.py start
+
+# In another terminal, check health / list managed ports:
+python harness/vllm_server_manager.py status
+```
+
+Run `evaluator.py` from a second terminal while the servers stay up. The same
+vLLM servers on `:8000` / `:8001` also back the local **judges**
+(`config/judges.yaml`, `access: vllm`), so a full run with local judges needs
+them running too.
+
+> The local **judge** backend is vLLM-only (`judges.yaml` uses `access: vllm`);
+> there is no Ollama judge backend yet. Switching to Ollama as described above
+> applies to the models **under test**, not the judge panel.
 
 ## Tests
 

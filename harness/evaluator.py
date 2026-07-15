@@ -11,6 +11,7 @@ Ties the pieces together:
 Usage (from the PRD setup section):
     python harness/evaluator.py --models mistral-7b-4bit --judges all
     python harness/evaluator.py --outputs results/model_outputs.jsonl --judges cheap
+    python harness/evaluator.py --models mistral-7b-4bit --no-judge   # generate only
 
 Note: consensus here is a placeholder majority vote. The real meta-evaluation
 (inter-judge agreement, bias detection) is Sam's manual work -- see
@@ -114,11 +115,20 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         help="Judge subset preset.",
     )
     parser.add_argument("--prefer-engine", default="ollama", choices=["ollama", "vllm"])
+    parser.add_argument(
+        "--no-judge",
+        action="store_true",
+        help="Only generate model outputs; skip the judge panel. Requires --models.",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
+
+    if args.no_judge and not args.models:
+        parser.error("--no-judge only makes sense with --models (nothing to judge, "
+                     "nothing to generate otherwise).")
 
     if args.models:
         loader = ModelLoader(args.models_config, prefer_engine=args.prefer_engine)
@@ -126,6 +136,10 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         # Fresh generation run: start the outputs file clean.
         open(args.outputs, "w").close()
         runner.run_tests(args.models)
+
+    if args.no_judge:
+        logger.info("Generation-only run (--no-judge); outputs at %s", args.outputs)
+        return 0
 
     run_evaluation(
         outputs_path=args.outputs,
