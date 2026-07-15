@@ -1,0 +1,60 @@
+# config/models.yaml
+#
+# Model catalogue for the behavioral-invariance eval harness (PRD v3.1).
+#
+# Two roles are represented here:
+#   * `local_models`  -- pre-quantized checkpoints served locally (vLLM / Ollama).
+#   * `remote_models` -- API-hosted models (no local serving required).
+#
+# Everything is checkpoint-driven, NOT runtime-quantization-driven: the checkpoint
+# version pins the exact behavior (see PRD "Why Pre-Quantized Checkpoints?").
+#
+# NOTE for Sam: the `fine_tuned` entries below are placeholders. Community GGUF
+# conversions are not always available for fine-tuned variants -- fall back to a
+# cloud provider (e.g. Replicate) where noted.
+
+local_models:
+  - id: "mistral-7b-4bit"
+    checkpoint: "unsloth/Mistral-7B-v0.3-GGUF"   # pre-quantized GGUF
+    quantization: "4-bit"
+    size_gb: 4.2
+    context_tokens: 32768
+    serving:
+      engine: "vllm"        # vllm | ollama
+      vllm_port: 8000
+      ollama_tag: "mistral:7b"
+
+  - id: "llama-2-7b-4bit"
+    checkpoint: "unsloth/Llama-2-7b-GGUF"         # pre-quantized GGUF
+    quantization: "4-bit"
+    size_gb: 4.1
+    context_tokens: 4096
+    serving:
+      engine: "vllm"
+      vllm_port: 8001
+      ollama_tag: "llama2:7b"
+
+# Fine-tuned variants under evaluation. GGUF may not exist -> use a cloud provider.
+fine_tuned_models:
+  - id: "qwen-coder-7b"
+    checkpoint: "Qwen/Qwen2.5-Coder-7B"
+    quantization: "none"
+    provider: "replicate"   # cloud-based; no local GGUF assumed
+    context_tokens: 32768
+
+# API-hosted models. Called over HTTPS; never served locally.
+remote_models:
+  - id: "claude-sonnet-4-6"
+    provider: "anthropic"
+    model: "claude-sonnet-4-6"
+    access: "api"
+
+  - id: "gpt-4o"
+    provider: "openai"
+    model: "gpt-4o"
+    access: "api"
+
+  - id: "llama-3.1-70b"
+    provider: "replicate"
+    model: "meta/meta-llama-3.1-70b-instruct"
+    access: "api"           # too large for local serving on 32GB

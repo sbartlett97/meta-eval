@@ -1,0 +1,40 @@
+# config/hardware_profile.yaml
+#
+# Mac-specific serving settings (PRD v3.1). Centralises the knobs that Sam must
+# tune against real hardware so they are not scattered through the code.
+#
+# Target: MacBook Pro M5, 32GB unified memory, Apple Metal acceleration.
+
+hardware:
+  name: "MacBook Pro M5"
+  total_memory_gb: 32
+  accelerator: "metal"        # metal | cuda | cpu
+  # Rough memory budget (see PRD "Total VRAM Usage"):
+  #   2x 7B GGUF (~8.3GB) + vLLM overhead (~2GB) ~= 10-11GB for judges,
+  #   leaving ~20GB for test-model inference + analysis.
+  reserved_for_judges_gb: 11
+
+# Default vLLM launch parameters. Applied to every local server unless a model
+# overrides them. SAM MUST VERIFY these against the M5 (PRD review checklist).
+vllm_defaults:
+  tensor_parallel_size: 1        # single device
+  gpu_memory_utilization: 0.8    # fraction of unified memory per server
+  max_model_len: 2048            # context window served
+  dtype: "auto"                  # infer from checkpoint
+  enable_prefix_caching: true    # reuse shared prompt prefixes
+  # Extra CLI flags appended verbatim to `vllm serve`. Leave empty unless a
+  # specific Metal tuning flag is required.
+  extra_args: []
+
+# Health-check / lifecycle tuning.
+lifecycle:
+  health_check_timeout_s: 90     # generous: cold GGUF load can be slow
+  health_poll_interval_s: 2.0
+  startup_grace_s: 5.0           # wait before first poll
+  shutdown_timeout_s: 20.0       # SIGTERM grace before SIGKILL
+
+# Default request settings for local judge calls.
+inference_defaults:
+  request_timeout_s: 30
+  max_retries: 2
+  retry_backoff_s: 2.0
