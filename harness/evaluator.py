@@ -23,7 +23,17 @@ import argparse
 import json
 import logging
 import os
+import sys
 from typing import Dict, List, Optional
+
+# Allow running as a script (`python harness/evaluator.py`, as documented in the
+# README). Executing a file directly puts its own directory (harness/) on
+# sys.path but NOT the project root, so `import harness` / `import judges` would
+# fail with ModuleNotFoundError. Add the project root before the first-party
+# imports so the documented command works without installing the package.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 from harness.model_loader import ModelLoader
 from harness.test_runner import TestRunner
