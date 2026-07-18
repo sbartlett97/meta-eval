@@ -13,6 +13,10 @@
 # conversions are not always available for fine-tuned variants -- fall back to a
 # cloud provider (e.g. Replicate) where noted.
 
+# The `vllm` engine now loads the checkpoint IN-PROCESS (harness/vllm_engine.py):
+# no separate `vllm serve` process and no port. The `ollama` engine still talks
+# to the local Ollama daemon over HTTP. `hf_allow_patterns` (optional) narrows
+# what hydration downloads from a repo (e.g. a single GGUF quant file).
 local_models:
   - id: "mistral-7b-4bit"
     checkpoint: "unsloth/Mistral-7B-v0.3-GGUF"   # pre-quantized GGUF
@@ -20,8 +24,7 @@ local_models:
     size_gb: 4.2
     context_tokens: 32768
     serving:
-      engine: "vllm"        # vllm | ollama
-      vllm_port: 8000
+      engine: "vllm"        # vllm (in-process) | ollama
       ollama_tag: "mistral:7b"
 
   - id: "llama-2-7b-4bit"
@@ -31,7 +34,6 @@ local_models:
     context_tokens: 4096
     serving:
       engine: "vllm"
-      vllm_port: 8001
       ollama_tag: "llama2:7b"
 
 # Fine-tuned variants under evaluation. GGUF may not exist -> use a cloud provider.

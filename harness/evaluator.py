@@ -2,6 +2,8 @@
 
 Ties the pieces together:
 
+    0. Hydrate: download every open-weight checkpoint from HuggingFace up front
+       (skip with ``--no-hydrate``).
     1. (optional) generate model outputs via ``TestRunner`` if they don't exist.
     2. Build the judge panel from ``config/judges.yaml``.
     3. Run every judge over every model output.
@@ -36,6 +38,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+from harness.hydrate import hydrate_weights
 from harness.model_loader import ModelLoader
 from harness.test_runner import TestRunner
 from judges.factory import build_judges
@@ -56,9 +59,12 @@ def run_evaluation(
     judges_config: str = "config/judges.yaml",
     verdicts_path: str = "results/model_verdicts.jsonl",
     max_priority: Optional[int] = None,
+    hardware_profile: str = "config/hardware_profile.yaml",
 ) -> str:
     """Judge previously-generated model outputs; write verdicts. Returns the path."""
-    judges = build_judges(judges_config, max_priority=max_priority)
+    judges = build_judges(
+        judges_config, max_priority=max_priority, hardware_profile=hardware_profile
+    )
     panel = JudgePanel(judges)
     logger.info("Judge panel: %s", [j.id for j in judges])
 
@@ -102,6 +108,7 @@ def _cli(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--test-suite", default="data/test_suite_v1.jsonl")
     parser.add_argument("--models-config", default="config/models.yaml")
     parser.add_argument("--judges-config", default="config/judges.yaml")
+    parser.add_argument("--hardware-config", default="config/hardware_profile.yaml")
     parser.add_argument(
         "--outputs",
         default="results/model_outputs.jsonl",
@@ -120,6 +127,11 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Only generate model outputs; skip the judge panel. Requires --models.",
     )
+    parser.add_argument(
+        "--no-hydrate",
+        action="store_true",
+        help="Skip the startup step that downloads open weights from HuggingFace.",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -130,8 +142,20 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         parser.error("--no-judge only makes sense with --models (nothing to judge, "
                      "nothing to generate otherwise).")
 
+    # Hydration: pull every open-weight checkpoint from HF up front so the first
+    # in-process vLLM load doesn't block mid-run on a multi-GB download.
+    if not args.no_hydrate:
+        hydrate_weights(
+            models_config=args.models_config,
+            judges_config=args.judges_config,
+        )
+
     if args.models:
-        loader = ModelLoader(args.models_config, prefer_engine=args.prefer_engine)
+        loader = ModelLoader(
+            args.models_config,
+            prefer_engine=args.prefer_engine,
+            hardware_profile=args.hardware_config,
+        )
         runner = TestRunner(args.test_suite, loader, results_path=args.outputs)
         # Fresh generation run: start the outputs file clean.
         open(args.outputs, "w").close()
@@ -146,6 +170,7 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         judges_config=args.judges_config,
         verdicts_path=args.verdicts,
         max_priority=_JUDGE_PRESETS[args.judges],
+        hardware_profile=args.hardware_config,
     )
     return 0
 

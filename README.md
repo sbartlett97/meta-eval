@@ -6,9 +6,10 @@ common LLM-as-a-judge models are biased on safety-critical tasks.
 
 This repository implements the **core scaffolding** for the *Behavioral
 Invariance Eval Harness + Meta-Evaluation Infrastructure* (PRD v3.1). It targets
-consumer hardware (MacBook Pro M5, 32GB) using **pre-quantized checkpoints**
-served via **vLLM** (or Ollama), with **all judges called through a unified
-HTTP/API interface**.
+consumer hardware (MacBook Pro M5, 32GB) using **pre-quantized checkpoints**.
+Local models and judges are loaded **in-process via the vLLM Python API** (no
+separate server, no HTTP hop); remote judges are called through their hosted
+APIs. Every judge implements the same `Judge.evaluate(...)` contract.
 
 > **Status.** This is AI-generated scaffolding for review. Items marked
 > **[Sam]** below are intentionally left as decisions / manual work (test-suite
@@ -20,15 +21,16 @@ HTTP/API interface**.
 ```
 Pre-quantized checkpoints (HF/Unsloth GGUF)
         │
-        ▼
-vLLM servers (:8000 Mistral, :8001 Llama)  ── served by harness/vllm_server_manager.py
+        ▼   hydration: harness/hydrate.py downloads open weights from HF at startup
+        │
+        ▼   in-process vLLM engines (harness/vllm_engine.py) — loaded lazily, shared
         │
         ▼
 Test Runner ──> model outputs ──> Judge Panel ──> verdicts + consensus
                                     ├─ Claude   (Anthropic API)
                                     ├─ GPT-4o   (OpenAI API)
-                                    ├─ Mistral  (local vLLM :8000)
-                                    ├─ Llama    (local vLLM :8001)
+                                    ├─ Mistral  (in-process vLLM)
+                                    ├─ Llama    (in-process vLLM)
                                     └─ Heuristic (deterministic, in-process)
 ```
 
@@ -39,26 +41,28 @@ entirely (see [Generate outputs only](#generate-outputs-only-no-judges)).
 
 Every judge — remote or local — implements the same
 `Judge.evaluate(test_id, model_output, criteria) -> Verdict` contract, so the
-panel calls Claude, a local vLLM model, or the heuristic baseline through
-identical code.
+panel calls Claude, a local in-process vLLM model, or the heuristic baseline
+through identical code. Local models and judges that share a checkpoint reuse a
+**single in-process engine** (weights are loaded once, process-wide).
 
 ## Layout
 
 ```
 harness/
-  vllm_server_manager.py   # start/stop/health-check local vLLM servers  [Sam review]
-  model_loader.py          # load models UNDER TEST (Ollama / vLLM / cloud)
+  vllm_engine.py           # in-process vLLM engines (lazy, process-wide cache)
+  hydrate.py               # download open weights from HuggingFace at startup
+  model_loader.py          # load models UNDER TEST (Ollama / in-process vLLM / cloud)
   test_suite.py            # test-suite schema + .jsonl loader
   test_runner.py           # run a suite against models, persist outputs
-  evaluator.py             # CLI: generate outputs + run judge panel
+  evaluator.py             # CLI: hydrate + generate outputs + run judge panel
 judges/
   base.py                  # Judge ABC + Verdict types
   prompts.py               # shared judge prompt + JSON response parser
   claude_judge.py          # Anthropic API judge
   gpt4_judge.py            # OpenAI API judge
-  local_vllm_judge.py      # base for local vLLM judges
-  mistral_local_judge.py   # local Mistral judge (:8000)
-  llama_local_judge.py     # local Llama judge (:8001)
+  local_vllm_judge.py      # base for local in-process vLLM judges
+  mistral_local_judge.py   # local Mistral judge (in-process)
+  llama_local_judge.py     # local Llama judge (in-process)
   heuristic_judge.py       # deterministic baseline
   factory.py               # build judges from config/judges.yaml
   judge_panel.py           # orchestrate the panel + naive consensus
@@ -75,24 +79,30 @@ tests/                     # unit tests for the pure-Python components
 
 ```bash
 # 1. Core install (pure-Python wheels; installs cleanly on every platform).
+#    Includes huggingface_hub, used by the startup weight-hydration step.
 pip install -r requirements.txt
 
 # 2. Local model serving — pick ONE backend (PRD "Decision 1").
-#    Neither is a hard dependency; the harness shells out to `ollama` / `vllm`.
 #
-#    Ollama (recommended on Apple Silicon; auto-managed by the harness):
-brew install ollama
-#    or vLLM (more control; you start the servers yourself — see Usage):
+#    vLLM (loaded IN-PROCESS; required for any `engine: vllm` / `access: vllm`
+#    model or judge — the harness imports vllm directly, no server to start):
 pip install "vllm>=0.3.0"
+#    or Ollama (recommended on Apple Silicon; talked to over HTTP, auto-managed):
+brew install ollama
 
 # 3. API keys for the remote judges (only needed if you run those judges).
 export ANTHROPIC_API_KEY=...   # Claude judge
 export OPENAI_API_KEY=...       # GPT-4o judge
+
+# 4. (optional) HuggingFace token for gated repos (e.g. Llama-2) that hydration
+#    downloads. Picked up automatically by huggingface_hub.
+export HF_TOKEN=...
 ```
 
 You do **not** need to pre-`ollama pull` the models — when a test model uses the
 Ollama backend, `harness/model_loader.py` starts the `ollama serve` daemon (if
-it isn't already up) and pulls the model tag on demand.
+it isn't already up) and pulls the model tag on demand. Likewise you do **not**
+need to pre-download HF weights: the harness hydrates them at startup (below).
 
 ## Usage
 
@@ -103,15 +113,21 @@ come from `config/judges.yaml`.
 ### Full run: generate outputs, then judge
 
 ```bash
-# Ollama-backed test model — no server to start by hand:
-python harness/evaluator.py --models mistral-7b-4bit --judges all --prefer-engine ollama
-
-# vLLM-backed test model — start the local server(s) FIRST (see below):
+# In-process vLLM test model — nothing to start by hand; weights are hydrated,
+# then loaded in-process on first use:
 python harness/evaluator.py --models mistral-7b-4bit --judges all
+
+# Ollama-backed test model:
+python harness/evaluator.py --models mistral-7b-4bit --judges all --prefer-engine ollama
 ```
 
 `--judges` selects a preset: `all` (every enabled judge), `cheap` (priority ≤ 1,
 i.e. the remote API judges only), or `pilot`.
+
+On startup the harness **hydrates**: it downloads every open-weight checkpoint
+referenced by `config/models.yaml` + `config/judges.yaml` from HuggingFace. Pass
+`--no-hydrate` to skip it (e.g. a `--judges cheap` run that needs no local
+weights).
 
 ### Judge previously-generated outputs
 
@@ -130,19 +146,43 @@ python harness/evaluator.py --models mistral-7b-4bit --no-judge
 
 This runs the suite against the model and writes only
 `results/model_outputs.jsonl` (one row per test/model — prompt, category,
-criteria, raw model output). No judge is built, so **no API keys and no judge
-servers are required**. `--no-judge` requires `--models` (there is nothing to
-generate otherwise).
+criteria, raw model output). No judge is built, so **no API keys are required**.
+`--no-judge` requires `--models` (there is nothing to generate otherwise).
 
 Results of a full run are written to `results/model_verdicts.jsonl` (one row per
 test/model with each judge's verdict plus a placeholder consensus).
 
-## Choosing the serving backend: Ollama vs vLLM
+## Weight hydration
+
+At startup the harness downloads all **open weights** from HuggingFace so the
+first in-process vLLM load doesn't block mid-run on a multi-gigabyte download.
+"Open weights" = every `checkpoint` on a locally-served `local_models` /
+`fine_tuned_models` entry plus every `access: vllm` judge's `model`; cloud/API
+models (Anthropic, OpenAI, Replicate) are skipped.
+
+`huggingface_hub.snapshot_download` is idempotent, so after the first run
+hydration only verifies the cache. Skip it with `--no-hydrate`, or run it
+standalone:
+
+```bash
+python harness/hydrate.py            # download everything now
+python harness/hydrate.py --dry-run  # just list what would be downloaded
+```
+
+Gated repos (e.g. `unsloth/Llama-2-7b-GGUF`) need `HF_TOKEN` set. To restrict a
+GGUF repo to a single quant file, add `hf_allow_patterns` to its config entry
+(e.g. `hf_allow_patterns: ["*Q4_K_M.gguf"]`).
+
+## Choosing the serving backend: in-process vLLM vs Ollama
 
 The backend for each **model under test** is set per-model in
-`config/models.yaml` (it is YAML, not JSON) under `serving.engine`. To load the
-local models with **Ollama instead of vLLM**, edit that field for each
-`local_models` entry:
+`config/models.yaml` (it is YAML, not JSON) under `serving.engine`:
+
+- `vllm` (default) — the checkpoint is loaded **in-process** via the vLLM Python
+  API (`harness/vllm_engine.py`). No server, no port, no HTTP. vLLM must be
+  installed (`pip install "vllm>=0.3.0"`).
+- `ollama` — generation goes to the local Ollama daemon over HTTP. To use it,
+  edit the field per `local_models` entry:
 
 ```yaml
 local_models:
@@ -150,47 +190,30 @@ local_models:
     checkpoint: "unsloth/Mistral-7B-v0.3-GGUF"
     serving:
       engine: "ollama"          # was: "vllm"
-      vllm_port: 8000
       ollama_tag: "mistral:7b"  # tag Ollama pulls/serves
 ```
 
-This **is manual** — you edit the config file. The `ollama_tag` is already
-present for the shipped models, so switching `engine` is the only change needed.
+The `ollama_tag` is already present for the shipped models, so switching
+`engine` is the only change needed.
 
 > **Note on `--prefer-engine`.** The CLI accepts `--prefer-engine {ollama,vllm}`,
 > but a model's `serving.engine` in `config/models.yaml` currently takes
 > precedence, so the flag does not override a model that is pinned to a specific
 > engine. Treat editing `serving.engine` as the source of truth.
 
-### Do I have to start the servers manually?
+### Do I have to start anything manually?
 
-It depends on the backend:
+No. Both local backends are self-managing:
 
-| Backend | Who starts the server? |
+| Backend | Startup |
 | --- | --- |
-| **Ollama** | **Automatic.** `model_loader.py` starts the `ollama serve` daemon (if down) and pulls the tag on first use. Nothing to launch by hand. |
-| **vLLM** | **Manual.** The harness does **not** start vLLM in-process. `VLLMModel.generate` just POSTs to `http://localhost:<port>/v1/completions` and assumes a server is already listening there. |
+| **in-process vLLM** | **Automatic.** `harness/vllm_engine.py` loads the checkpoint in-process on first `generate` and caches the engine process-wide. Nothing to launch. |
+| **Ollama** | **Automatic.** `model_loader.py` starts the `ollama serve` daemon (if down) and pulls the tag on first use. |
 
-For the vLLM path, start the servers yourself before generating:
-
-```bash
-# Starts a vLLM server for every local_models entry whose serving.engine is
-# "vllm", on its configured vllm_port. Runs in the FOREGROUND; Ctrl-C stops
-# them (the servers live only as long as this process).
-python harness/vllm_server_manager.py start
-
-# In another terminal, check health / list managed ports:
-python harness/vllm_server_manager.py status
-```
-
-Run `evaluator.py` from a second terminal while the servers stay up. The same
-vLLM servers on `:8000` / `:8001` also back the local **judges**
-(`config/judges.yaml`, `access: vllm`), so a full run with local judges needs
-them running too.
-
-> The local **judge** backend is vLLM-only (`judges.yaml` uses `access: vllm`);
-> there is no Ollama judge backend yet. Switching to Ollama as described above
-> applies to the models **under test**, not the judge panel.
+The local **judge** backend is in-process vLLM only (`judges.yaml` uses
+`access: vllm`); a judge and a test model that share a checkpoint reuse the same
+in-process engine. There is no Ollama judge backend yet; switching to Ollama as
+described above applies to the models **under test**, not the judge panel.
 
 ## Tests
 
@@ -209,8 +232,9 @@ the suite loader, the judge factory, and panel aggregation).
 - **The real meta-evaluation methodology.** `judges.judge_panel.aggregate_verdicts`
   is a naive majority vote so the pipeline runs end-to-end; inter-judge
   agreement, bias detection, and reliability weighting are yours to design.
-- **On-hardware verification.** Confirm the vLLM CLI flags in
-  `config/hardware_profile.yaml`, the 32GB memory budget, startup time, and
-  graceful shutdown on the actual M5 (PRD "Sam Must Review" checklist).
+- **On-hardware verification.** Confirm the in-process vLLM engine kwargs in
+  `config/hardware_profile.yaml` (`gpu_memory_utilization`, `max_model_len`,
+  GGUF `quantization`/`tokenizer` handling), the 32GB memory budget, and
+  load time on the actual M5 (PRD "Sam Must Review" checklist).
 - **Cloud fallback wiring.** `harness.model_loader.ReplicateModel.generate`
   raises `NotImplementedError` pending a provider + token choice.

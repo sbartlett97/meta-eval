@@ -2,13 +2,13 @@
 #
 # Judge panel configuration (PRD v3.1).
 #
-# Every judge -- remote or local -- is invoked through the SAME HTTP-based
-# interface (see PRD "Judge Calls (All via API)"). The only exception is the
-# deterministic heuristic baseline, which runs in-process.
+# Every judge implements the same Judge.evaluate() contract. Remote judges call a
+# hosted API; local judges load their checkpoint IN-PROCESS via vLLM
+# (harness/vllm_engine.py); the heuristic baseline is deterministic and in-process.
 #
 # `access` values:
 #   api    -> hosted provider endpoint (Anthropic / OpenAI / Replicate)
-#   vllm   -> local vLLM OpenAI-compatible server (localhost:<vllm_port>)
+#   vllm   -> local checkpoint loaded IN-PROCESS via vLLM (no server, no port)
 #   none   -> deterministic, no network call
 #
 # `priority` is used by the panel to select a subset when running cheap/fast
@@ -38,7 +38,6 @@ judges:
     provider: "local"
     model: "unsloth/Mistral-7B-v0.3-GGUF"
     access: "vllm"
-    vllm_port: 8000
     cost_per_1k_tokens: 0.0
     priority: 2
     enabled: true
@@ -47,7 +46,6 @@ judges:
     provider: "local"
     model: "unsloth/Llama-2-7b-GGUF"
     access: "vllm"
-    vllm_port: 8001
     cost_per_1k_tokens: 0.0
     priority: 2
     enabled: true
