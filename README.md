@@ -124,10 +124,10 @@ python harness/evaluator.py --models mistral-7b-4bit --judges all --prefer-engin
 `--judges` selects a preset: `all` (every enabled judge), `cheap` (priority ≤ 1,
 i.e. the remote API judges only), or `pilot`.
 
-On startup the harness **hydrates**: it downloads every open-weight checkpoint
-referenced by `config/models.yaml` + `config/judges.yaml` from HuggingFace. Pass
-`--no-hydrate` to skip it (e.g. a `--judges cheap` run that needs no local
-weights).
+On startup the harness **hydrates**: it downloads the open-weight checkpoints
+this run needs from HuggingFace (the requested `--models` plus the local judges
+actually selected — see [Weight hydration](#weight-hydration)). Pass
+`--no-hydrate` to skip it entirely.
 
 ### Judge previously-generated outputs
 
@@ -154,19 +154,27 @@ test/model with each judge's verdict plus a placeholder consensus).
 
 ## Weight hydration
 
-At startup the harness downloads all **open weights** from HuggingFace so the
-first in-process vLLM load doesn't block mid-run on a multi-gigabyte download.
-"Open weights" = every `checkpoint` on a locally-served `local_models` /
-`fine_tuned_models` entry plus every `access: vllm` judge's `model`; cloud/API
-models (Anthropic, OpenAI, Replicate) are skipped.
+At startup the harness downloads the **open weights this run needs** from
+HuggingFace so the first in-process vLLM load doesn't block mid-run on a
+multi-gigabyte download. Hydration is scoped to the run:
+
+- the models named in `--models` (nothing when you only re-judge), and
+- the local (`access: vllm`) judges that will actually be built — i.e. after the
+  `--judges` preset and `enabled` are applied, and skipped entirely under
+  `--no-judge`.
+
+So `--outputs ... --judges cheap` (remote judges only, no `--models`) downloads
+**nothing**; `--models mistral-7b-4bit --judges cheap` pulls only the Mistral
+checkpoint. Cloud/API models (Anthropic, OpenAI, Replicate) are always skipped.
 
 `huggingface_hub.snapshot_download` is idempotent, so after the first run
 hydration only verifies the cache. Skip it with `--no-hydrate`, or run it
-standalone:
+standalone (no scoping filters → downloads everything in the configs):
 
 ```bash
-python harness/hydrate.py            # download everything now
-python harness/hydrate.py --dry-run  # just list what would be downloaded
+python harness/hydrate.py                         # download all open weights now
+python harness/hydrate.py --models mistral-7b-4bit # just this model's weights
+python harness/hydrate.py --dry-run               # list what would be downloaded
 ```
 
 Gated repos (e.g. `unsloth/Llama-2-7b-GGUF`) need `HF_TOKEN` set. To restrict a

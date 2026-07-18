@@ -20,10 +20,14 @@ Two separate passes, two files, so expensive generation is done once and can be
 re-judged:
 
 ```
-hydrate (download open weights from HF)
+hydrate (download the open weights this run needs from HF)
   → generate: models under test → results/model_outputs.jsonl
   → judge:    judge panel over outputs → results/model_verdicts.jsonl
 ```
+
+Hydration is scoped to the run: only the requested `--models` and the local
+judges actually selected are downloaded (`harness/hydrate.py:collect_weights`
+takes the filters; the evaluator passes them).
 
 `harness/evaluator.py` is the CLI entrypoint that ties it together.
 

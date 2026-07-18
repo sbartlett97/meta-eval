@@ -169,6 +169,56 @@ def test_collect_weights_dedups_and_skips_cloud():
     assert repos == ["org/a", "org/ft2", "org/llama"]
 
 
+_SCOPED_MODELS = {
+    "local_models": [
+        {"id": "mistral", "checkpoint": "org/mistral", "serving": {"engine": "vllm"}},
+        {"id": "llama", "checkpoint": "org/llama", "serving": {"engine": "vllm"}},
+    ],
+}
+_SCOPED_JUDGES = {
+    "judges": [
+        {"id": "claude", "provider": "anthropic", "access": "api", "priority": 1},
+        {"id": "mistral-local", "provider": "local", "access": "vllm",
+         "model": "org/mistral", "priority": 2, "enabled": True},
+        {"id": "off", "provider": "local", "access": "vllm",
+         "model": "org/off", "priority": 2, "enabled": False},
+    ]
+}
+
+
+def _repos(**kwargs):
+    return sorted(s.repo_id for s in hydrate.collect_weights(
+        _SCOPED_MODELS, _SCOPED_JUDGES, **kwargs))
+
+
+def test_scope_model_ids_restricts_models():
+    # Only the requested model, plus the enabled local judge.
+    assert _repos(model_ids=["mistral"]) == ["org/mistral"]
+
+
+def test_scope_empty_model_ids_hydrates_no_models():
+    # A re-judge run generates nothing: no model weights, judges still included.
+    assert _repos(model_ids=[]) == ["org/mistral"]
+
+
+def test_scope_none_model_ids_includes_all_models():
+    assert _repos(model_ids=None) == ["org/llama", "org/mistral"]
+
+
+def test_scope_include_judges_false_skips_judge_weights():
+    assert _repos(model_ids=["mistral"], include_judges=False) == ["org/mistral"]
+
+
+def test_scope_judge_max_priority_filters_local_judges():
+    # priority<=1 excludes the priority-2 local judge -> remote-only run, nothing.
+    assert _repos(model_ids=[], judge_max_priority=1) == []
+
+
+def test_scope_skips_disabled_judges():
+    # The disabled "off" judge (org/off) is never hydrated.
+    assert "org/off" not in _repos(model_ids=[])
+
+
 def test_hydrate_weights_downloads_each_repo(monkeypatch):
     calls = []
 

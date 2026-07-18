@@ -142,12 +142,17 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         parser.error("--no-judge only makes sense with --models (nothing to judge, "
                      "nothing to generate otherwise).")
 
-    # Hydration: pull every open-weight checkpoint from HF up front so the first
-    # in-process vLLM load doesn't block mid-run on a multi-GB download.
+    # Hydration: pull the open-weight checkpoints THIS run needs from HF up front
+    # so the first in-process vLLM load doesn't block mid-run on a multi-GB
+    # download. Scoped to the requested models + the judges actually selected, so
+    # e.g. a remote-only `--judges cheap` re-judge downloads nothing.
     if not args.no_hydrate:
         hydrate_weights(
             models_config=args.models_config,
             judges_config=args.judges_config,
+            model_ids=args.models or [],
+            include_judges=not args.no_judge,
+            judge_max_priority=_JUDGE_PRESETS[args.judges],
         )
 
     if args.models:
