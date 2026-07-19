@@ -5,7 +5,7 @@
 # It contains only pure-Python wheels that install cleanly on every platform, so
 # `pip install -r requirements.txt` never fails on an unrelated heavy dependency.
 #
-# Heavy / platform-specific serving backends (vLLM, Ollama) and the future
+# The heavy, platform-specific serving backend (vLLM) and the future
 # meta-evaluation analysis stack are intentionally kept OUT of the default
 # install and listed as clearly-marked optional extras below.
 #
@@ -14,7 +14,8 @@
 
 # --- Core runtime (required) -------------------------------------------
 pyyaml>=6.0             # config loading (config/*.yaml)
-requests>=2.31          # all model + local-judge HTTP calls
+requests>=2.31          # Ollama HTTP calls + remote judge SDK transport
+huggingface_hub>=0.20   # startup weight hydration (harness/hydrate.py)
 
 # --- Remote judge APIs -------------------------------------------------
 # Pure-Python SDKs, imported lazily and only when the Claude / GPT-4 judges are
@@ -27,10 +28,11 @@ pytest>=7.4.0
 pytest-cov>=4.1.0
 
 # --- Optional: local model serving -------------------------------------
-# Heavy and platform-specific. The harness shells out to the `vllm` CLI (it does
-# NOT import vllm in-process) and talks to Ollama over HTTP, so neither is a hard
-# dependency and neither should block the core install. Install the backend you
-# use, separately:
+# Heavy and platform-specific, so kept out of the core install. Local vLLM models
+# and judges now load the checkpoint IN-PROCESS via `import vllm`
+# (harness/vllm_engine.py) rather than shelling out to a server, so vLLM must be
+# installed to evaluate any local (`engine: vllm` / `access: vllm`) entry. Ollama
+# is still talked to over HTTP. Install the backend you use, separately:
 #   vLLM:   pip install "vllm>=0.3.0"
 #   Ollama: brew install ollama   (or `pip install ollama` for the Python client)
 

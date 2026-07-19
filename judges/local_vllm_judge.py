@@ -1,18 +1,20 @@
-"""Base class for local judges served via a vLLM OpenAI-compatible server.
+"""Base class for local judges backed by an **in-process** vLLM engine.
 
-Mistral (:8000) and Llama (:8001) differ only in id + port, so they share this
-implementation. All calls go over HTTP -- the same interface as the remote
-judges (PRD "Judge Calls (All via API)").
+Mistral and Llama judges differ only in id + default checkpoint, so they share
+this implementation. Unlike the earlier design, calls no longer go over HTTP to a
+separately-started ``vllm serve`` process: the checkpoint is loaded in-process via
+:mod:`harness.vllm_engine` and inference runs in-line. The engine is shared
+process-wide, so a judge and a test model that use the same checkpoint reuse a
+single loaded copy of the weights.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
+from typing import Dict, Optional
 
-import requests
-
+from harness.vllm_engine import get_engine
 from judges.base import Judge, Verdict
 from judges.prompts import format_judge_prompt, parse_json_from_response
 
@@ -20,50 +22,46 @@ logger = logging.getLogger(__name__)
 
 
 class LocalVLLMJudge(Judge):
-    """Judge that calls a local vLLM server's ``/v1/completions`` endpoint.
+    """Judge that runs a local checkpoint in-process via vLLM.
 
     Args:
-        vllm_port: Port the target model is served on.
-        model_id: Checkpoint id passed through to vLLM (``model`` field).
+        model_id: HuggingFace checkpoint id loaded in-process (e.g.
+            ``unsloth/Mistral-7B-v0.3-GGUF``).
         judge_id: Stable id for this judge in results/config.
-        timeout_s: Per-request timeout.
-        max_retries: Retries on timeout / connection error.
-        retry_backoff_s: Base backoff (linear) between retries.
+        engine_kwargs: ``vllm.LLM`` constructor kwargs (from the hardware
+            profile). Optional; defaults apply when omitted.
+        max_tokens: Generation cap for the judge's JSON verdict.
+        temperature: Sampling temperature.
     """
 
     provider = "local"
 
     def __init__(
         self,
-        vllm_port: int,
         model_id: str,
         judge_id: str,
-        timeout_s: int = 30,
-        max_retries: int = 2,
-        retry_backoff_s: float = 2.0,
+        engine_kwargs: Optional[Dict] = None,
         max_tokens: int = 256,
         temperature: float = 0.7,
     ) -> None:
         super().__init__()
-        self.base_url = f"http://localhost:{vllm_port}"
         self.model_id = model_id
         self.id = judge_id
-        self.timeout_s = timeout_s
-        self.max_retries = max_retries
-        self.retry_backoff_s = retry_backoff_s
+        self.engine_kwargs = dict(engine_kwargs or {})
         self.max_tokens = max_tokens
         self.temperature = temperature
 
     def _evaluate(self, test_id: str, model_output: str, criteria: str) -> Verdict:
         prompt = format_judge_prompt(test_id, model_output, criteria)
+        engine = get_engine(self.model_id, self.engine_kwargs)
+
         start = time.monotonic()
-        payload = self._post_with_retries(prompt)
+        text = engine.generate(
+            prompt, max_tokens=self.max_tokens, temperature=self.temperature
+        )
         latency = time.monotonic() - start
 
-        choice = payload["choices"][0]["text"]
-        tokens = payload.get("usage", {}).get("completion_tokens")
-        parsed = parse_json_from_response(choice)
-
+        parsed = parse_json_from_response(text)
         return Verdict(
             verdict=parsed.get("verdict", "AMBIGUOUS"),
             confidence=parsed.get("confidence", 0.0),
@@ -71,37 +69,6 @@ class LocalVLLMJudge(Judge):
             test_id=test_id,
             rationale=parsed.get("rationale", ""),
             latency_s=latency,
-            tokens=tokens,
-            raw=choice,
+            tokens=None,
+            raw=text,
         )
-
-    def _post_with_retries(self, prompt: str) -> dict:
-        last_exc: Optional[Exception] = None
-        for attempt in range(self.max_retries + 1):
-            try:
-                resp = requests.post(
-                    f"{self.base_url}/v1/completions",
-                    json={
-                        "model": self.model_id,
-                        "prompt": prompt,
-                        "max_tokens": self.max_tokens,
-                        "temperature": self.temperature,
-                    },
-                    timeout=self.timeout_s,
-                )
-                resp.raise_for_status()
-                return resp.json()
-            except (requests.Timeout, requests.ConnectionError) as exc:
-                last_exc = exc
-                if attempt < self.max_retries:
-                    wait = self.retry_backoff_s * (attempt + 1)
-                    logger.warning(
-                        "%s call failed (%s); retry %d/%d in %.1fs",
-                        self.id,
-                        exc.__class__.__name__,
-                        attempt + 1,
-                        self.max_retries,
-                        wait,
-                    )
-                    time.sleep(wait)
-        raise RuntimeError(f"{self.id}: vLLM call failed after retries") from last_exc

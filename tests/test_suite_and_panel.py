@@ -85,7 +85,7 @@ def test_factory_builds_from_config():
             {"id": "heuristic-baseline", "provider": "deterministic", "access": "none",
              "priority": 3, "enabled": True},
             {"id": "mistral-7b-local", "provider": "local", "access": "vllm",
-             "vllm_port": 8000, "model": "unsloth/Mistral-7B-v0.3-GGUF",
+             "model": "unsloth/Mistral-7B-v0.3-GGUF",
              "priority": 2, "enabled": True},
             {"id": "disabled", "provider": "deterministic", "access": "none",
              "priority": 3, "enabled": False},

@@ -1,14 +1,17 @@
 """Model Loader for *test* models (PRD v3.1).
 
-This loads the models being EVALUATED (not the judges). It is deliberately
-separate from ``vllm_server_manager`` (which serves the local *judge* models).
+This loads the models being EVALUATED (not the judges). Local vLLM models are
+loaded in-process through the shared ``harness.vllm_engine`` engine cache — the
+same cache the local *judge* models use, so a shared checkpoint is loaded once.
 
 Design (PRD "Decision 2: Test Model Loading"): a single ``ModelLoader.load()``
 returns an object exposing ``generate(prompt) -> str``, regardless of backend.
 Three backends are supported so Sam can pick without touching call sites:
 
     * ``ollama``   -- recommended on Apple Silicon; pre-built quantized models.
-    * ``vllm``     -- OpenAI-compatible local server (localhost:<port>).
+    * ``vllm``     -- **in-process** vLLM engine (``harness.vllm_engine``); the
+      checkpoint is loaded in-process and inference runs in-line, with no
+      separately-started server and no HTTP hop.
     * ``replicate``/``api`` -- cloud fallback for models too large for local.
 
 The recommended default is Ollama (PRD "Option A: Ollama-based (Recommended for
@@ -20,11 +23,13 @@ from __future__ import annotations
 import logging
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Optional, Protocol
 
 import requests
 import yaml
+
+from harness.vllm_engine import engine_kwargs_from_profile, get_engine
 
 logger = logging.getLogger(__name__)
 
@@ -73,26 +78,24 @@ class OllamaModel:
 
 @dataclass
 class VLLMModel:
-    """Test model served by a local vLLM OpenAI-compatible server."""
+    """Test model served by an **in-process** vLLM engine (no separate server).
+
+    The checkpoint is loaded in-process via :mod:`harness.vllm_engine` and shared
+    process-wide, so ``generate`` is an in-line call — not an HTTP request to a
+    ``vllm serve`` process. ``engine_kwargs`` come from the hardware profile.
+    """
 
     id: str
     checkpoint: str
-    port: int
-    timeout_s: int = _DEFAULT_TIMEOUT_S
+    engine_kwargs: Dict = field(default_factory=dict)
 
     def generate(self, prompt: str, **kwargs) -> str:
-        resp = requests.post(
-            f"http://localhost:{self.port}/v1/completions",
-            json={
-                "model": self.checkpoint,
-                "prompt": prompt,
-                "max_tokens": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
-                "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
-            },
-            timeout=self.timeout_s,
+        engine = get_engine(self.checkpoint, self.engine_kwargs)
+        return engine.generate(
+            prompt,
+            max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+            temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
         )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["text"]
 
 
 @dataclass
@@ -125,6 +128,10 @@ class ModelLoader:
             config lists more than one option. ``"ollama"`` (default) or
             ``"vllm"``.
         ensure_daemon: If True and using Ollama, attempt to start the daemon.
+        hardware_profile: Parsed ``config/hardware_profile.yaml`` dict, or a path
+            to it. Supplies the in-process vLLM engine kwargs (``gpu_memory_
+            utilization``, ``max_model_len``, ...). Optional; sensible vLLM
+            defaults apply when omitted.
     """
 
     def __init__(
@@ -132,10 +139,12 @@ class ModelLoader:
         models_config,
         prefer_engine: str = "ollama",
         ensure_daemon: bool = True,
+        hardware_profile=None,
     ) -> None:
         self.config = _as_dict(models_config)
         self.prefer_engine = prefer_engine
         self.ensure_daemon = ensure_daemon
+        self._engine_kwargs = engine_kwargs_from_profile(_as_dict(hardware_profile))
         self._cache: Dict[str, GenerativeModel] = {}
         self._index = self._build_index()
 
@@ -177,7 +186,7 @@ class ModelLoader:
             return VLLMModel(
                 id=model_id,
                 checkpoint=entry["checkpoint"],
-                port=int(serving.get("vllm_port", 8000)),
+                engine_kwargs=dict(self._engine_kwargs),
             )
 
         raise ValueError(f"Unsupported serving engine {engine!r} for {model_id!r}")
