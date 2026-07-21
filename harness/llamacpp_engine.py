@@ -172,6 +172,55 @@ def resident_engines() -> "list[LlamaCppEngine]":
         return [e for e in _ENGINE_CACHE.values() if e.loaded]
 
 
+def _import_llama_cls():
+    """Import ``llama_cpp.Llama`` with a clear install message (lazy)."""
+    try:
+        from llama_cpp import Llama
+    except ImportError as exc:  # pragma: no cover - env dependent
+        raise RuntimeError(
+            "llama-cpp-python is not installed but the llamacpp backend needs "
+            "it. Install it with `pip install llama-cpp-python` (see its docs "
+            "for a Metal/CUDA-accelerated build), or serve this model via "
+            "Ollama / an API instead."
+        ) from exc
+    return Llama
+
+
+def download_pretrained(
+    repo_id: str,
+    filename: str,
+    additional_files: Optional[Sequence[str]] = None,
+) -> None:
+    """Download a GGUF (and any ``additional_files``) to the local cache.
+
+    Uses the same ``Llama.from_pretrained`` path that :meth:`LlamaCppEngine.generate`
+    uses to load, so hydration and serving fetch bit-for-bit the same file(s)
+    through llama-cpp-python — no separate ``huggingface_hub`` download call. The
+    model is loaded ``vocab_only`` (just the vocabulary, negligible memory) and
+    immediately closed: the point is to land the file on disk, not to serve it.
+    ``from_pretrained`` raises if the file/repo can't be found, so a wrong name
+    fails loudly here at hydration time.
+    """
+    if not filename:
+        raise RuntimeError(
+            f"llama.cpp needs a GGUF filename to fetch {repo_id!r}. Set the exact "
+            "GGUF file name via `gguf_file` (models: `serving.gguf_file`, judges: "
+            "`gguf_file`) — the value you'd pass to from_pretrained(filename=...)."
+        )
+    Llama = _import_llama_cls()
+    kwargs = {"vocab_only": True, "verbose": False}
+    if additional_files:
+        kwargs["additional_files"] = list(additional_files)
+    logger.info("Hydrating GGUF via llama.cpp: %s :: %s", repo_id, filename)
+    llm = Llama.from_pretrained(repo_id=repo_id, filename=filename, **kwargs)
+    close = getattr(llm, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception as exc:  # noqa: BLE001 - best-effort teardown
+            logger.warning("Error closing hydration handle for %s: %s", repo_id, exc)
+
+
 def _make_key(
     repo_id: Optional[str],
     filename: Optional[str],
@@ -236,15 +285,7 @@ class LlamaCppEngine:
             _ENGINE_CACHE.move_to_end(self.key)  # most-recently used
 
     def _construct(self) -> object:
-        try:
-            from llama_cpp import Llama
-        except ImportError as exc:  # pragma: no cover - env dependent
-            raise RuntimeError(
-                "llama-cpp-python is not installed but the llamacpp backend needs "
-                "it. Install it with `pip install llama-cpp-python` (see its docs "
-                "for a Metal/CUDA-accelerated build), or serve this model via "
-                "Ollama / an API instead."
-            ) from exc
+        Llama = _import_llama_cls()
         if self.model_path:
             logger.info("Loading GGUF in-process (llama.cpp): %s", self.model_path)
             return Llama(model_path=self.model_path, **self.engine_kwargs)

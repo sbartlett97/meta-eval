@@ -169,7 +169,7 @@ So `--outputs ... --judges cheap` (remote judges only, no `--models`) downloads
 **nothing**; `--models mistral-7b-4bit --judges cheap` pulls only the Mistral
 checkpoint. Cloud/API models (Anthropic, OpenAI, Replicate) are always skipped.
 
-`huggingface_hub.snapshot_download` is idempotent, so after the first run
+Downloads are idempotent (llama.cpp reuses the HF cache), so after the first run
 hydration only verifies the cache. Skip it with `--no-hydrate`, or run it
 standalone (no scoping filters → downloads everything in the configs):
 
@@ -179,13 +179,14 @@ python harness/hydrate.py --models mistral-7b-4bit # just this model's weights
 python harness/hydrate.py --dry-run               # list what would be downloaded
 ```
 
-Gated repos (e.g. `unsloth/Llama-2-7b-GGUF`) need `HF_TOKEN` set. A `llamacpp`
-entry's `gguf_file` scopes the download to a single file. Prefer the **exact**
-GGUF file name (as in HuggingFace's "Use this model" snippet), e.g.
-`gguf_file: "Mistral-7B-v0.3.Q4_K_M.gguf"`: hydration then fetches exactly that
-file with `hf_hub_download` and **fails loudly if the name is wrong**, instead of
-a glob like `"*Q4_K_M.gguf"` that can silently match nothing. `additional_files`
-fetches extra parts (split-GGUF shards); `hf_allow_patterns` overrides both.
+Hydration downloads through **llama-cpp-python** — the same
+`Llama.from_pretrained` path used to serve — so it fetches exactly the file the
+engine will load, not the whole repo, with no direct `huggingface_hub` call of
+our own. Gated repos (e.g. `unsloth/Llama-2-7b-GGUF`) need `HF_TOKEN` set. Prefer
+the **exact** GGUF file name in `gguf_file` (as in HuggingFace's "Use this model"
+snippet), e.g. `gguf_file: "Mistral-7B-v0.3.Q4_K_M.gguf"`: it's unambiguous and
+**fails loudly if the name is wrong**. A glob like `"*Q4_K_M.gguf"` also works.
+`additional_files` fetches extra parts (split-GGUF shards).
 
 ## The serving backend: in-process llama.cpp
 

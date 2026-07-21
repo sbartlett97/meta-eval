@@ -23,12 +23,12 @@
 # `serving.gguf_file` is passed straight to Llama.from_pretrained(filename=...).
 # Prefer the EXACT file name (as in HuggingFace's "Use this model" snippet), e.g.
 #   gguf_file: "Mistral-7B-v0.3.Q4_K_M.gguf"
-# An exact name is reproducible AND makes hydration fail loudly if it's wrong,
-# instead of a glob that silently matches nothing. A glob ("*Q4_K_M.gguf") is
-# still accepted -- handy when you don't want to hardcode the full name -- and is
-# what the shipped entries below use. Either way hydration downloads only that
-# file, never the whole repo of quants. `additional_files` fetches extra parts
-# (e.g. split-GGUF shards) alongside it; `hf_allow_patterns` overrides both.
+# An exact name is reproducible and unambiguous; a glob ("*Q4_K_M.gguf") is also
+# accepted -- handy when you don't want to hardcode the full name -- and is what
+# the shipped entries below use. Hydration downloads through llama-cpp-python
+# (Llama.from_pretrained), so it fetches exactly the file the engine will load --
+# never the whole repo of quants -- and fails loudly if the name is wrong.
+# `additional_files` fetches extra parts (e.g. split-GGUF shards) alongside it.
 local_models:
   - id: "mistral-7b-4bit"
     checkpoint: "unsloth/Mistral-7B-v0.3-GGUF"   # pre-quantized GGUF repo

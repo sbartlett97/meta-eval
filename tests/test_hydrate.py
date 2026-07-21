@@ -1,17 +1,17 @@
-"""Tests for the HuggingFace weight-hydration step.
+"""Tests for the weight-hydration step.
 
-huggingface_hub is not installed in the test environment (and is heavy), so the
-download tests inject a lightweight fake into ``sys.modules`` to exercise the
-wiring without touching the network. The llama.cpp-specific hydration scoping
-(``gguf_file`` -> ``allow_patterns``) lives in ``test_llamacpp_engine.py``.
+Hydration downloads through llama-cpp-python (``llamacpp_engine.download_pretrained``),
+so the download tests monkeypatch that call to record what would be fetched,
+without touching the network or loading weights. The engine-level behaviour of
+``download_pretrained`` itself lives in ``test_llamacpp_engine.py``.
 """
 
-import sys
-import types
+import os
 
 import pytest
 
 from harness import hydrate
+from harness import llamacpp_engine
 
 
 # ---------------------------------------------------------------------- #
@@ -100,63 +100,37 @@ def test_scope_skips_disabled_judges():
 def test_hydrate_weights_downloads_each_repo(monkeypatch):
     calls = []
 
-    def fake_snapshot_download(repo_id, allow_patterns=None, token=None):
-        calls.append({"repo_id": repo_id, "allow_patterns": allow_patterns, "token": token})
-        return f"/cache/{repo_id}"
+    def fake_download(repo_id, filename=None, additional_files=None):
+        calls.append({
+            "repo_id": repo_id,
+            "filename": filename,
+            "additional_files": tuple(additional_files or ()),
+        })
 
-    fake_hub = types.ModuleType("huggingface_hub")
-    fake_hub.snapshot_download = fake_snapshot_download
-    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
-
-    models = {"local_models": [{"id": "a", "checkpoint": "org/a",
-                                "hf_allow_patterns": ["*.gguf"]}]}
-    hydrated = hydrate.hydrate_weights(models_config=models, judges_config={}, token="tok")
-
-    assert hydrated == ["org/a"]
-    assert calls == [{"repo_id": "org/a", "allow_patterns": ["*.gguf"], "token": "tok"}]
-
-
-def test_hydrate_exact_filename_uses_hf_hub_download(monkeypatch):
-    calls = []
-
-    def fake_hf_hub_download(repo_id, filename=None, token=None):
-        calls.append({"repo_id": repo_id, "filename": filename, "token": token})
-        return f"/cache/{repo_id}/{filename}"
-
-    fake_hub = types.ModuleType("huggingface_hub")
-    fake_hub.hf_hub_download = fake_hf_hub_download
-    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+    monkeypatch.setattr(llamacpp_engine, "download_pretrained", fake_download)
 
     models = {
         "local_models": [
-            {
-                "id": "q",
-                "checkpoint": "org/q",
-                "serving": {
-                    "engine": "llamacpp",
-                    "gguf_file": "model-BF16.gguf",
-                    "additional_files": ["shard-2.gguf"],
-                },
-            }
+            {"id": "a", "checkpoint": "org/a",
+             "serving": {"engine": "llamacpp", "gguf_file": "a-Q4.gguf",
+                         "additional_files": ["a-2.gguf"]}},
         ]
     }
     hydrated = hydrate.hydrate_weights(models_config=models, judges_config={}, token="tok")
 
-    assert hydrated == ["org/q"]
-    # The exact file and its additional shard are each fetched by name.
+    assert hydrated == ["org/a"]
     assert calls == [
-        {"repo_id": "org/q", "filename": "model-BF16.gguf", "token": "tok"},
-        {"repo_id": "org/q", "filename": "shard-2.gguf", "token": "tok"},
+        {"repo_id": "org/a", "filename": "a-Q4.gguf", "additional_files": ("a-2.gguf",)}
     ]
+    # A provided token is exported so from_pretrained's huggingface_hub sees it.
+    assert os.environ.get("HF_TOKEN") == "tok"
 
 
-def test_hydrate_missing_exact_file_raises_clear_error(monkeypatch):
-    def fake_hf_hub_download(repo_id, filename=None, token=None):
+def test_hydrate_wraps_download_errors(monkeypatch):
+    def boom(repo_id, filename=None, additional_files=None):
         raise Exception("404 Client Error: Entry Not Found")
 
-    fake_hub = types.ModuleType("huggingface_hub")
-    fake_hub.hf_hub_download = fake_hf_hub_download
-    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+    monkeypatch.setattr(llamacpp_engine, "download_pretrained", boom)
 
     models = {
         "local_models": [
@@ -164,20 +138,17 @@ def test_hydrate_missing_exact_file_raises_clear_error(monkeypatch):
              "serving": {"engine": "llamacpp", "gguf_file": "missing.gguf"}}
         ]
     }
-    with pytest.raises(RuntimeError, match="Could not fetch 'missing.gguf'"):
+    with pytest.raises(RuntimeError, match="Could not hydrate .*missing.gguf"):
         hydrate.hydrate_weights(models_config=models, judges_config={})
 
 
 def test_hydrate_dry_run_downloads_nothing(monkeypatch):
-    # Even without huggingface_hub importable, a dry run must not try to import it.
-    monkeypatch.setitem(sys.modules, "huggingface_hub", None)
-    models = {"local_models": [{"id": "a", "checkpoint": "org/a"}]}
+    def boom(*args, **kwargs):
+        raise AssertionError("dry run must not download")
+
+    monkeypatch.setattr(llamacpp_engine, "download_pretrained", boom)
+    models = {"local_models": [
+        {"id": "a", "checkpoint": "org/a",
+         "serving": {"engine": "llamacpp", "gguf_file": "a.gguf"}}]}
     hydrated = hydrate.hydrate_weights(models_config=models, judges_config={}, dry_run=True)
     assert hydrated == ["org/a"]
-
-
-def test_hydrate_missing_hub_raises(monkeypatch):
-    monkeypatch.setitem(sys.modules, "huggingface_hub", None)  # force ImportError
-    models = {"local_models": [{"id": "a", "checkpoint": "org/a"}]}
-    with pytest.raises(RuntimeError, match="huggingface_hub is required"):
-        hydrate.hydrate_weights(models_config=models, judges_config={})

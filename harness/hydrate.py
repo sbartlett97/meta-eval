@@ -8,17 +8,19 @@ block on a multi-gigabyte download mid-run. Hydrating up front makes that cost
 explicit, lets it happen once, and surfaces auth errors on gated repos (e.g.
 Llama-2) immediately instead of deep inside an evaluation.
 
-``snapshot_download`` is idempotent: already-cached repos are verified and
-skipped, so hydrating on every start is cheap after the first run.
+Downloads go through **llama-cpp-python** — :func:`llamacpp_engine.download_pretrained`
+calls the same ``Llama.from_pretrained`` path serving uses (loading the file
+``vocab_only`` and closing it), rather than calling ``huggingface_hub`` directly.
+So hydration fetches bit-for-bit the file the engine will later load, it is
+idempotent (already-cached files are reused), and a wrong ``gguf_file`` fails
+loudly here instead of mid-run.
 
 What counts as an "open weight" here: any config entry that is served locally and
 carries a HuggingFace checkpoint id — the ``local_models`` and (non-cloud)
 ``fine_tuned_models`` in ``config/models.yaml`` plus the ``access: llamacpp``
-judges in ``config/judges.yaml``. When an entry pins an **exact** GGUF file name
-(``gguf_file`` / ``serving.gguf_file``, as in llama.cpp's ``from_pretrained``
-snippet) hydration fetches exactly that file with ``hf_hub_download`` — and
-raises a clear error if it does not exist, instead of a glob that silently
-matches nothing. A ``gguf_file`` glob still works (scoped snapshot download).
+judges in ``config/judges.yaml``. Each pins the GGUF to fetch via ``gguf_file`` /
+``serving.gguf_file`` (exact file name, as in llama.cpp's ``from_pretrained``
+snippet, or a glob), optionally with ``additional_files`` (split-GGUF shards).
 Cloud/API models (Anthropic, OpenAI, Replicate) have no local weights and are
 skipped.
 
@@ -32,10 +34,13 @@ standalone ``python harness/hydrate.py`` CLI does.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional
 
 import yaml
+
+from harness import llamacpp_engine
 
 logger = logging.getLogger(__name__)
 
@@ -45,26 +50,15 @@ _CLOUD_PROVIDERS = {"anthropic", "openai", "replicate", "api"}
 
 @dataclass(frozen=True)
 class WeightSpec:
-    """One open-weight download to hydrate from the HuggingFace Hub.
-
-    Two mutually-exclusive shapes:
-
-    * ``filename`` set — an **exact** file (the GGUF the llama.cpp engine will
-      load, plus any ``additional_files``). Fetched with ``hf_hub_download``, the
-      same primitive ``Llama.from_pretrained`` uses, so a missing file raises a
-      clear error instead of silently downloading nothing.
-    * ``filename`` unset — a repo snapshot restricted by ``allow_patterns`` globs
-      (or the whole repo when both are ``None``).
-    """
+    """One GGUF to hydrate via ``Llama.from_pretrained`` (llama-cpp-python)."""
 
     repo_id: str
     #: Where it came from, for logging (e.g. "local_models:mistral-7b-4bit").
     source: str
-    #: Optional HF glob(s) to restrict a snapshot download (e.g. "*Q4_K_M.gguf").
-    allow_patterns: Optional[List[str]] = None
-    #: Exact single file to fetch via hf_hub_download (an exact GGUF file name).
+    #: GGUF file to fetch — an exact name (preferred) or a glob. Maps to
+    #: ``from_pretrained(filename=...)``.
     filename: Optional[str] = None
-    #: Extra exact files to fetch alongside ``filename`` (e.g. split-GGUF shards).
+    #: Extra files to fetch alongside ``filename`` (e.g. split-GGUF shards).
     additional_files: tuple = ()
 
 
@@ -110,11 +104,10 @@ def collect_weights(
             repo = entry.get("checkpoint")
             if not repo:
                 continue
-            filename, additional, allow = _download_plan(entry)
+            filename, additional = _gguf_target(entry)
             _add(specs, WeightSpec(
                 repo_id=repo,
                 source=f"{group}:{entry.get('id', repo)}",
-                allow_patterns=allow,
                 filename=filename,
                 additional_files=additional,
             ))
@@ -131,11 +124,10 @@ def collect_weights(
             repo = entry.get("model")
             if not repo:
                 continue
-            filename, additional, allow = _download_plan(entry)
+            filename, additional = _gguf_target(entry)
             _add(specs, WeightSpec(
                 repo_id=repo,
                 source=f"judges:{entry.get('id', repo)}",
-                allow_patterns=allow,
                 filename=filename,
                 additional_files=additional,
             ))
@@ -192,18 +184,26 @@ def hydrate_weights(
             )
         return [s.repo_id for s in specs]
 
+    # ``from_pretrained`` authenticates via huggingface_hub's env token; make an
+    # explicit token visible to it for gated repos.
+    if token:
+        os.environ["HF_TOKEN"] = token
+
     hydrated: List[str] = []
     for spec in specs:
         logger.info("Downloading %s (%s) ...", _spec_target(spec), spec.source)
-        if spec.filename is not None:
-            _download_files(spec, token)
-        else:
-            snapshot_download = _import_snapshot_download()
-            snapshot_download(
+        try:
+            llamacpp_engine.download_pretrained(
                 repo_id=spec.repo_id,
-                allow_patterns=spec.allow_patterns,
-                token=token,
+                filename=spec.filename,
+                additional_files=spec.additional_files,
             )
+        except Exception as exc:  # noqa: BLE001 - re-raised with actionable context
+            raise RuntimeError(
+                f"Could not hydrate {_spec_target(spec)} ({spec.source}) via "
+                f"llama-cpp-python: {exc}. Check that `gguf_file` matches a file in "
+                "the repo (the value you'd pass to from_pretrained(filename=...))."
+            ) from exc
         hydrated.append(spec.repo_id)
     logger.info("Hydration complete: %d checkpoint(s) ready.", len(hydrated))
     return hydrated
@@ -214,89 +214,32 @@ def hydrate_weights(
 # ---------------------------------------------------------------------- #
 def _add(specs: "Dict[str, WeightSpec]", spec: WeightSpec) -> None:
     # Key by the full target, not just the repo, so two entries pinning different
-    # exact files in the same repo both hydrate (but true duplicates collapse).
+    # files in the same repo both hydrate (but true duplicates collapse).
     key = "::".join([
         spec.repo_id,
         spec.filename or "",
         "|".join(spec.additional_files or ()),
-        "|".join(spec.allow_patterns or []),
     ])
     specs.setdefault(key, spec)
 
 
-def _download_plan(entry: Dict):
-    """Decide how to fetch one config entry: (filename, additional_files, allow).
+def _gguf_target(entry: Dict):
+    """The GGUF to fetch for one config entry: ``(filename, additional_files)``.
 
-    Precedence:
-    * explicit ``hf_allow_patterns`` -> snapshot download with those globs;
-    * an **exact** ``gguf_file`` (no ``*?[`` wildcards, as in the HF
-      ``from_pretrained`` snippet) -> single-file ``hf_hub_download`` of exactly
-      that file (plus ``additional_files``), which errors clearly if it does not
-      exist rather than silently matching nothing;
-    * a ``gguf_file`` **glob** -> snapshot download scoped to that pattern;
-    * nothing -> the whole repo.
+    ``filename`` is the entry's ``gguf_file`` (models: ``serving.gguf_file``) —
+    an exact name (preferred) or a glob — passed straight to
+    ``from_pretrained(filename=...)``. ``additional_files`` are extra parts to
+    fetch alongside it (e.g. split-GGUF shards).
     """
     serving = entry.get("serving", {}) or {}
-    explicit = entry.get("hf_allow_patterns")
     gguf = entry.get("gguf_file") or serving.get("gguf_file")
-    additional = list(entry.get("additional_files") or serving.get("additional_files") or [])
-
-    if explicit:
-        return None, (), list(explicit)
-    if gguf and _is_exact_filename(gguf):
-        return gguf, tuple(additional), None
-    if gguf:  # a glob pattern
-        return None, (), [gguf, *additional]
-    return None, (), None
-
-
-def _is_exact_filename(name: str) -> bool:
-    """True if ``name`` is a literal file name, not an fnmatch glob."""
-    return bool(name) and not any(ch in name for ch in "*?[")
+    additional = tuple(entry.get("additional_files") or serving.get("additional_files") or [])
+    return gguf, additional
 
 
 def _spec_target(spec: WeightSpec) -> str:
-    if spec.filename is not None:
-        files = ", ".join([spec.filename, *spec.additional_files])
-        return f"{spec.repo_id} :: {files}"
-    return spec.repo_id
-
-
-def _download_files(spec: WeightSpec, token: Optional[str]) -> None:
-    """Fetch an exact-file spec via ``hf_hub_download`` with a clear error."""
-    hf_hub_download = _import_hf_hub_download()
-    for fname in [spec.filename, *spec.additional_files]:
-        try:
-            hf_hub_download(repo_id=spec.repo_id, filename=fname, token=token)
-        except Exception as exc:  # noqa: BLE001 - re-raised with actionable context
-            raise RuntimeError(
-                f"Could not fetch '{fname}' from HuggingFace repo "
-                f"'{spec.repo_id}' ({spec.source}): {exc}. Check that the exact "
-                "file name matches one in the repo (this is the `gguf_file` value "
-                "you'd pass to Llama.from_pretrained(filename=...))."
-            ) from exc
-
-
-def _import_snapshot_download():
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError as exc:  # pragma: no cover - env dependent
-        raise RuntimeError(
-            "huggingface_hub is required to hydrate weights "
-            "(`pip install huggingface_hub`), or pass --no-hydrate to skip it."
-        ) from exc
-    return snapshot_download
-
-
-def _import_hf_hub_download():
-    try:
-        from huggingface_hub import hf_hub_download
-    except ImportError as exc:  # pragma: no cover - env dependent
-        raise RuntimeError(
-            "huggingface_hub is required to hydrate weights "
-            "(`pip install huggingface_hub`), or pass --no-hydrate to skip it."
-        ) from exc
-    return hf_hub_download
+    files = ", ".join([f for f in [spec.filename, *spec.additional_files] if f])
+    return f"{spec.repo_id} :: {files}" if files else spec.repo_id
 
 
 def _as_dict(value) -> Dict:

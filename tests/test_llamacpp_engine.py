@@ -273,9 +273,38 @@ def test_factory_builds_llamacpp_judge():
 
 
 # ---------------------------------------------------------------------- #
+# download_pretrained: hydration goes through llama-cpp-python
+# ---------------------------------------------------------------------- #
+def test_download_pretrained_uses_from_pretrained_vocab_only(fake_llama_cpp):
+    llamacpp_engine.download_pretrained(
+        repo_id="org/repo",
+        filename="model-BF16.gguf",
+        additional_files=["shard-2.gguf"],
+    )
+    assert len(_FakeLlama.instances) == 1
+    llm = _FakeLlama.instances[0]
+    assert llm.repo_id == "org/repo"
+    assert llm.filename == "model-BF16.gguf"
+    assert llm.kwargs.get("vocab_only") is True  # downloads to disk, no full load
+    assert llm.kwargs.get("additional_files") == ["shard-2.gguf"]
+    assert llm.closed is True  # not kept resident
+
+
+def test_download_pretrained_requires_filename(fake_llama_cpp):
+    with pytest.raises(RuntimeError, match="needs a GGUF filename"):
+        llamacpp_engine.download_pretrained(repo_id="org/repo", filename=None)
+
+
+def test_download_pretrained_missing_llama_cpp_raises(monkeypatch):
+    monkeypatch.setitem(sys.modules, "llama_cpp", None)  # force ImportError
+    with pytest.raises(RuntimeError, match="llama-cpp-python is not installed"):
+        llamacpp_engine.download_pretrained(repo_id="org/repo", filename="m.gguf")
+
+
+# ---------------------------------------------------------------------- #
 # Hydration scoping for GGUF entries
 # ---------------------------------------------------------------------- #
-def test_collect_weights_includes_llamacpp_judges_and_scopes_to_gguf():
+def test_collect_weights_includes_llamacpp_judges_and_targets_gguf():
     models = {
         "local_models": [
             {
@@ -298,29 +327,12 @@ def test_collect_weights_includes_llamacpp_judges_and_scopes_to_gguf():
     }
     specs = {s.repo_id: s for s in hydrate.collect_weights(models, judges)}
     assert set(specs) == {"org/mistral", "org/llama"}
-    # gguf_file scopes the download to a single quant, not the whole repo.
-    assert specs["org/mistral"].allow_patterns == ["*Q4_K_M.gguf"]
-    assert specs["org/llama"].allow_patterns == ["*Q4_K_M.gguf"]
+    # gguf_file becomes the from_pretrained filename (here a glob).
+    assert specs["org/mistral"].filename == "*Q4_K_M.gguf"
+    assert specs["org/llama"].filename == "*Q4_K_M.gguf"
 
 
-def test_explicit_allow_patterns_override_gguf_file():
-    models = {
-        "local_models": [
-            {
-                "id": "m",
-                "checkpoint": "org/m",
-                "hf_allow_patterns": ["*.json", "*Q4.gguf"],
-                "serving": {"engine": "llamacpp", "gguf_file": "*Q8.gguf"},
-            },
-        ],
-    }
-    specs = {s.repo_id: s for s in hydrate.collect_weights(models, {})}
-    assert specs["org/m"].allow_patterns == ["*.json", "*Q4.gguf"]
-
-
-def test_exact_gguf_file_becomes_single_file_download():
-    # An exact file name (no wildcard) -> hf_hub_download of exactly that file,
-    # plus any additional shards -- not a glob snapshot.
+def test_exact_gguf_file_and_additional_files_are_captured():
     models = {
         "local_models": [
             {
@@ -337,4 +349,3 @@ def test_exact_gguf_file_becomes_single_file_download():
     (spec,) = hydrate.collect_weights(models, {})
     assert spec.filename == "Qwythos-9B-Claude-Mythos-5-1M-BF16.gguf"
     assert spec.additional_files == ("mmproj-F16.gguf",)
-    assert spec.allow_patterns is None  # not the glob path

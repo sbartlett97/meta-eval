@@ -15,7 +15,8 @@
 # --- Core runtime (required) -------------------------------------------
 pyyaml>=6.0             # config loading (config/*.yaml)
 requests>=2.31          # Ollama HTTP calls + remote judge SDK transport
-huggingface_hub>=0.20   # startup weight hydration (harness/hydrate.py)
+huggingface_hub>=0.20   # HF Hub auth/cache used by llama.cpp's from_pretrained
+                        # (weight hydration + serving; see harness/llamacpp_engine.py)
 
 # --- Remote judge APIs -------------------------------------------------
 # Pure-Python SDKs, imported lazily and only when the Claude / GPT-4 judges are
