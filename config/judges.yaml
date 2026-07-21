@@ -36,7 +36,9 @@ judges:
     enabled: true
 
   # ---- Local judges (served IN-PROCESS via llama.cpp / GGUF) ------------
-  # `gguf_file` pins one quant in the repo and also scopes hydration to it.
+  # `gguf_file` -> Llama.from_pretrained(filename=...): prefer the exact file
+  # name (e.g. "Mistral-7B-v0.3.Q4_K_M.gguf"); a glob is also accepted. It also
+  # scopes hydration to that file. `additional_files` fetches extra shards.
   - id: "mistral-7b-local"
     provider: "local"
     model: "unsloth/Mistral-7B-v0.3-GGUF"

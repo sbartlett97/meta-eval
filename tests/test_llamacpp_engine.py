@@ -91,8 +91,36 @@ def test_local_model_path_bypasses_hub(fake_llama_cpp):
     assert llm.repo_id is None
 
 
+def test_exact_filename_passthrough(fake_llama_cpp):
+    # The HF snippet form: an exact GGUF file name, not a glob.
+    engine = llamacpp_engine.get_engine(
+        repo_id="empero-ai/Qwythos-9B-Claude-Mythos-5-1M-GGUF",
+        filename="Qwythos-9B-Claude-Mythos-5-1M-BF16.gguf",
+    )
+    engine.generate("p")
+    llm = _FakeLlama.instances[0]
+    assert llm.filename == "Qwythos-9B-Claude-Mythos-5-1M-BF16.gguf"
+
+
+def test_additional_files_forwarded(fake_llama_cpp):
+    engine = llamacpp_engine.get_engine(
+        repo_id="org/repo",
+        filename="model-00001-of-00002.gguf",
+        additional_files=["model-00002-of-00002.gguf"],
+    )
+    engine.generate("p")
+    llm = _FakeLlama.instances[0]
+    assert llm.kwargs.get("additional_files") == ["model-00002-of-00002.gguf"]
+
+
+def test_missing_filename_raises_clear_error(fake_llama_cpp):
+    engine = llamacpp_engine.get_engine(repo_id="org/repo")  # no filename
+    with pytest.raises(RuntimeError, match="needs a GGUF filename"):
+        engine.generate("p")
+
+
 def test_sampling_params_forwarded(fake_llama_cpp):
-    engine = llamacpp_engine.get_engine(repo_id="org/repo")
+    engine = llamacpp_engine.get_engine(repo_id="org/repo", filename="m.gguf")
     engine.generate("p", max_tokens=32, temperature=0.9)
     call = _FakeLlama.instances[0].calls[0]
     assert call["max_tokens"] == 32
@@ -134,8 +162,8 @@ def test_missing_llama_cpp_raises_clear_error(monkeypatch):
 # ---------------------------------------------------------------------- #
 def test_max_resident_one_unloads_previous(fake_llama_cpp):
     llamacpp_engine.set_max_resident(1)
-    a = llamacpp_engine.get_engine(repo_id="org/a")
-    b = llamacpp_engine.get_engine(repo_id="org/b")
+    a = llamacpp_engine.get_engine(repo_id="org/a", filename="a.gguf")
+    b = llamacpp_engine.get_engine(repo_id="org/b", filename="b.gguf")
 
     a.generate("p")
     assert a.loaded is True
@@ -149,8 +177,8 @@ def test_max_resident_one_unloads_previous(fake_llama_cpp):
 
 def test_evicted_engine_reloads_on_next_use(fake_llama_cpp):
     llamacpp_engine.set_max_resident(1)
-    a = llamacpp_engine.get_engine(repo_id="org/a")
-    b = llamacpp_engine.get_engine(repo_id="org/b")
+    a = llamacpp_engine.get_engine(repo_id="org/a", filename="a.gguf")
+    b = llamacpp_engine.get_engine(repo_id="org/b", filename="b.gguf")
 
     a.generate("p")
     b.generate("q")  # evicts a
@@ -165,8 +193,8 @@ def test_evicted_engine_reloads_on_next_use(fake_llama_cpp):
 
 def test_max_resident_two_keeps_both(fake_llama_cpp):
     llamacpp_engine.set_max_resident(2)
-    a = llamacpp_engine.get_engine(repo_id="org/a")
-    b = llamacpp_engine.get_engine(repo_id="org/b")
+    a = llamacpp_engine.get_engine(repo_id="org/a", filename="a.gguf")
+    b = llamacpp_engine.get_engine(repo_id="org/b", filename="b.gguf")
     a.generate("p")
     b.generate("q")
     assert a.loaded and b.loaded  # both fit under the cap
@@ -288,3 +316,25 @@ def test_explicit_allow_patterns_override_gguf_file():
     }
     specs = {s.repo_id: s for s in hydrate.collect_weights(models, {})}
     assert specs["org/m"].allow_patterns == ["*.json", "*Q4.gguf"]
+
+
+def test_exact_gguf_file_becomes_single_file_download():
+    # An exact file name (no wildcard) -> hf_hub_download of exactly that file,
+    # plus any additional shards -- not a glob snapshot.
+    models = {
+        "local_models": [
+            {
+                "id": "q",
+                "checkpoint": "empero-ai/Qwythos-9B-Claude-Mythos-5-1M-GGUF",
+                "serving": {
+                    "engine": "llamacpp",
+                    "gguf_file": "Qwythos-9B-Claude-Mythos-5-1M-BF16.gguf",
+                    "additional_files": ["mmproj-F16.gguf"],
+                },
+            },
+        ],
+    }
+    (spec,) = hydrate.collect_weights(models, {})
+    assert spec.filename == "Qwythos-9B-Claude-Mythos-5-1M-BF16.gguf"
+    assert spec.additional_files == ("mmproj-F16.gguf",)
+    assert spec.allow_patterns is None  # not the glob path

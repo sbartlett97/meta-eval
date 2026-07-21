@@ -116,6 +116,58 @@ def test_hydrate_weights_downloads_each_repo(monkeypatch):
     assert calls == [{"repo_id": "org/a", "allow_patterns": ["*.gguf"], "token": "tok"}]
 
 
+def test_hydrate_exact_filename_uses_hf_hub_download(monkeypatch):
+    calls = []
+
+    def fake_hf_hub_download(repo_id, filename=None, token=None):
+        calls.append({"repo_id": repo_id, "filename": filename, "token": token})
+        return f"/cache/{repo_id}/{filename}"
+
+    fake_hub = types.ModuleType("huggingface_hub")
+    fake_hub.hf_hub_download = fake_hf_hub_download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+
+    models = {
+        "local_models": [
+            {
+                "id": "q",
+                "checkpoint": "org/q",
+                "serving": {
+                    "engine": "llamacpp",
+                    "gguf_file": "model-BF16.gguf",
+                    "additional_files": ["shard-2.gguf"],
+                },
+            }
+        ]
+    }
+    hydrated = hydrate.hydrate_weights(models_config=models, judges_config={}, token="tok")
+
+    assert hydrated == ["org/q"]
+    # The exact file and its additional shard are each fetched by name.
+    assert calls == [
+        {"repo_id": "org/q", "filename": "model-BF16.gguf", "token": "tok"},
+        {"repo_id": "org/q", "filename": "shard-2.gguf", "token": "tok"},
+    ]
+
+
+def test_hydrate_missing_exact_file_raises_clear_error(monkeypatch):
+    def fake_hf_hub_download(repo_id, filename=None, token=None):
+        raise Exception("404 Client Error: Entry Not Found")
+
+    fake_hub = types.ModuleType("huggingface_hub")
+    fake_hub.hf_hub_download = fake_hf_hub_download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+
+    models = {
+        "local_models": [
+            {"id": "q", "checkpoint": "org/q",
+             "serving": {"engine": "llamacpp", "gguf_file": "missing.gguf"}}
+        ]
+    }
+    with pytest.raises(RuntimeError, match="Could not fetch 'missing.gguf'"):
+        hydrate.hydrate_weights(models_config=models, judges_config={})
+
+
 def test_hydrate_dry_run_downloads_nothing(monkeypatch):
     # Even without huggingface_hub importable, a dry run must not try to import it.
     monkeypatch.setitem(sys.modules, "huggingface_hub", None)

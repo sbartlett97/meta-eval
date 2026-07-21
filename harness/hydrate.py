@@ -14,8 +14,11 @@ skipped, so hydrating on every start is cheap after the first run.
 What counts as an "open weight" here: any config entry that is served locally and
 carries a HuggingFace checkpoint id — the ``local_models`` and (non-cloud)
 ``fine_tuned_models`` in ``config/models.yaml`` plus the ``access: llamacpp``
-judges in ``config/judges.yaml``. When an entry pins a specific GGUF quant
-(``gguf_file`` / ``serving.gguf_file``) the download is scoped to that one file.
+judges in ``config/judges.yaml``. When an entry pins an **exact** GGUF file name
+(``gguf_file`` / ``serving.gguf_file``, as in llama.cpp's ``from_pretrained``
+snippet) hydration fetches exactly that file with ``hf_hub_download`` — and
+raises a clear error if it does not exist, instead of a glob that silently
+matches nothing. A ``gguf_file`` glob still works (scoped snapshot download).
 Cloud/API models (Anthropic, OpenAI, Replicate) have no local weights and are
 skipped.
 
@@ -42,13 +45,27 @@ _CLOUD_PROVIDERS = {"anthropic", "openai", "replicate", "api"}
 
 @dataclass(frozen=True)
 class WeightSpec:
-    """One open-weight repo to hydrate from the HuggingFace Hub."""
+    """One open-weight download to hydrate from the HuggingFace Hub.
+
+    Two mutually-exclusive shapes:
+
+    * ``filename`` set — an **exact** file (the GGUF the llama.cpp engine will
+      load, plus any ``additional_files``). Fetched with ``hf_hub_download``, the
+      same primitive ``Llama.from_pretrained`` uses, so a missing file raises a
+      clear error instead of silently downloading nothing.
+    * ``filename`` unset — a repo snapshot restricted by ``allow_patterns`` globs
+      (or the whole repo when both are ``None``).
+    """
 
     repo_id: str
     #: Where it came from, for logging (e.g. "local_models:mistral-7b-4bit").
     source: str
-    #: Optional HF glob(s) to restrict the download (e.g. a single GGUF quant).
+    #: Optional HF glob(s) to restrict a snapshot download (e.g. "*Q4_K_M.gguf").
     allow_patterns: Optional[List[str]] = None
+    #: Exact single file to fetch via hf_hub_download (an exact GGUF file name).
+    filename: Optional[str] = None
+    #: Extra exact files to fetch alongside ``filename`` (e.g. split-GGUF shards).
+    additional_files: tuple = ()
 
 
 def collect_weights(
@@ -93,10 +110,13 @@ def collect_weights(
             repo = entry.get("checkpoint")
             if not repo:
                 continue
+            filename, additional, allow = _download_plan(entry)
             _add(specs, WeightSpec(
                 repo_id=repo,
                 source=f"{group}:{entry.get('id', repo)}",
-                allow_patterns=_allow_patterns(entry),
+                allow_patterns=allow,
+                filename=filename,
+                additional_files=additional,
             ))
 
     if include_judges:
@@ -111,10 +131,13 @@ def collect_weights(
             repo = entry.get("model")
             if not repo:
                 continue
+            filename, additional, allow = _download_plan(entry)
             _add(specs, WeightSpec(
                 repo_id=repo,
                 source=f"judges:{entry.get('id', repo)}",
-                allow_patterns=_allow_patterns(entry),
+                allow_patterns=allow,
+                filename=filename,
+                additional_files=additional,
             ))
 
     return list(specs.values())
@@ -164,18 +187,23 @@ def hydrate_weights(
     )
     if dry_run:
         for spec in specs:
-            logger.info("  [dry-run] would download %s (%s)", spec.repo_id, spec.source)
+            logger.info(
+                "  [dry-run] would download %s (%s)", _spec_target(spec), spec.source
+            )
         return [s.repo_id for s in specs]
 
-    snapshot_download = _import_snapshot_download()
     hydrated: List[str] = []
     for spec in specs:
-        logger.info("Downloading %s (%s) ...", spec.repo_id, spec.source)
-        snapshot_download(
-            repo_id=spec.repo_id,
-            allow_patterns=spec.allow_patterns,
-            token=token,
-        )
+        logger.info("Downloading %s (%s) ...", _spec_target(spec), spec.source)
+        if spec.filename is not None:
+            _download_files(spec, token)
+        else:
+            snapshot_download = _import_snapshot_download()
+            snapshot_download(
+                repo_id=spec.repo_id,
+                allow_patterns=spec.allow_patterns,
+                token=token,
+            )
         hydrated.append(spec.repo_id)
     logger.info("Hydration complete: %d checkpoint(s) ready.", len(hydrated))
     return hydrated
@@ -185,24 +213,68 @@ def hydrate_weights(
 # Helpers
 # ---------------------------------------------------------------------- #
 def _add(specs: "Dict[str, WeightSpec]", spec: WeightSpec) -> None:
-    specs.setdefault(spec.repo_id, spec)
+    # Key by the full target, not just the repo, so two entries pinning different
+    # exact files in the same repo both hydrate (but true duplicates collapse).
+    key = "::".join([
+        spec.repo_id,
+        spec.filename or "",
+        "|".join(spec.additional_files or ()),
+        "|".join(spec.allow_patterns or []),
+    ])
+    specs.setdefault(key, spec)
 
 
-def _allow_patterns(entry: Dict) -> Optional[List[str]]:
-    """HF download globs for one config entry.
+def _download_plan(entry: Dict):
+    """Decide how to fetch one config entry: (filename, additional_files, allow).
 
-    Explicit ``hf_allow_patterns`` win. Otherwise, when the entry selects a
-    specific GGUF (``gguf_file`` for a judge, or ``serving.gguf_file`` for a
-    model), scope the download to that file so hydration pulls only the one quant
-    the llama.cpp engine will load — not the whole repo of quants.
+    Precedence:
+    * explicit ``hf_allow_patterns`` -> snapshot download with those globs;
+    * an **exact** ``gguf_file`` (no ``*?[`` wildcards, as in the HF
+      ``from_pretrained`` snippet) -> single-file ``hf_hub_download`` of exactly
+      that file (plus ``additional_files``), which errors clearly if it does not
+      exist rather than silently matching nothing;
+    * a ``gguf_file`` **glob** -> snapshot download scoped to that pattern;
+    * nothing -> the whole repo.
     """
+    serving = entry.get("serving", {}) or {}
     explicit = entry.get("hf_allow_patterns")
+    gguf = entry.get("gguf_file") or serving.get("gguf_file")
+    additional = list(entry.get("additional_files") or serving.get("additional_files") or [])
+
     if explicit:
-        return explicit
-    gguf = entry.get("gguf_file") or (entry.get("serving", {}) or {}).get("gguf_file")
-    if gguf:
-        return [gguf]
-    return None
+        return None, (), list(explicit)
+    if gguf and _is_exact_filename(gguf):
+        return gguf, tuple(additional), None
+    if gguf:  # a glob pattern
+        return None, (), [gguf, *additional]
+    return None, (), None
+
+
+def _is_exact_filename(name: str) -> bool:
+    """True if ``name`` is a literal file name, not an fnmatch glob."""
+    return bool(name) and not any(ch in name for ch in "*?[")
+
+
+def _spec_target(spec: WeightSpec) -> str:
+    if spec.filename is not None:
+        files = ", ".join([spec.filename, *spec.additional_files])
+        return f"{spec.repo_id} :: {files}"
+    return spec.repo_id
+
+
+def _download_files(spec: WeightSpec, token: Optional[str]) -> None:
+    """Fetch an exact-file spec via ``hf_hub_download`` with a clear error."""
+    hf_hub_download = _import_hf_hub_download()
+    for fname in [spec.filename, *spec.additional_files]:
+        try:
+            hf_hub_download(repo_id=spec.repo_id, filename=fname, token=token)
+        except Exception as exc:  # noqa: BLE001 - re-raised with actionable context
+            raise RuntimeError(
+                f"Could not fetch '{fname}' from HuggingFace repo "
+                f"'{spec.repo_id}' ({spec.source}): {exc}. Check that the exact "
+                "file name matches one in the repo (this is the `gguf_file` value "
+                "you'd pass to Llama.from_pretrained(filename=...))."
+            ) from exc
 
 
 def _import_snapshot_download():
@@ -214,6 +286,17 @@ def _import_snapshot_download():
             "(`pip install huggingface_hub`), or pass --no-hydrate to skip it."
         ) from exc
     return snapshot_download
+
+
+def _import_hf_hub_download():
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:  # pragma: no cover - env dependent
+        raise RuntimeError(
+            "huggingface_hub is required to hydrate weights "
+            "(`pip install huggingface_hub`), or pass --no-hydrate to skip it."
+        ) from exc
+    return hf_hub_download
 
 
 def _as_dict(value) -> Dict:

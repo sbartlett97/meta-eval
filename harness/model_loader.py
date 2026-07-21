@@ -24,7 +24,7 @@ import logging
 import subprocess
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Protocol
+from typing import Dict, List, Optional, Protocol
 
 import requests
 import yaml
@@ -89,12 +89,14 @@ class LlamaCppModel:
     id: str
     repo_id: str
     filename: Optional[str] = None
+    additional_files: List[str] = field(default_factory=list)
     engine_kwargs: Dict = field(default_factory=dict)
 
     def generate(self, prompt: str, **kwargs) -> str:
         engine = llamacpp_engine.get_engine(
             repo_id=self.repo_id,
             filename=self.filename,
+            additional_files=self.additional_files,
             engine_kwargs=self.engine_kwargs,
         )
         return engine.generate(
@@ -190,6 +192,7 @@ class ModelLoader:
                 id=model_id,
                 repo_id=entry["checkpoint"],
                 filename=serving.get("gguf_file"),
+                additional_files=list(serving.get("additional_files") or []),
                 engine_kwargs=dict(self._llamacpp_kwargs),
             )
 

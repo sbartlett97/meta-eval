@@ -180,17 +180,22 @@ python harness/hydrate.py --dry-run               # list what would be downloade
 ```
 
 Gated repos (e.g. `unsloth/Llama-2-7b-GGUF`) need `HF_TOKEN` set. A `llamacpp`
-entry's `gguf_file` (e.g. `"*Q4_K_M.gguf"`) already scopes the download to that
-one quant; `hf_allow_patterns` overrides it if you need finer control.
+entry's `gguf_file` scopes the download to a single file. Prefer the **exact**
+GGUF file name (as in HuggingFace's "Use this model" snippet), e.g.
+`gguf_file: "Mistral-7B-v0.3.Q4_K_M.gguf"`: hydration then fetches exactly that
+file with `hf_hub_download` and **fails loudly if the name is wrong**, instead of
+a glob like `"*Q4_K_M.gguf"` that can silently match nothing. `additional_files`
+fetches extra parts (split-GGUF shards); `hf_allow_patterns` overrides both.
 
 ## The serving backend: in-process llama.cpp
 
 Local models and judges are served **in-process via llama.cpp**
 (`harness/llamacpp_engine.py`). It is GGUF-native, so each engine is pinned to a
-**specific quant file** in a HuggingFace repo via `serving.gguf_file` (models) /
-`gguf_file` (judges) — `Llama.from_pretrained(repo_id, filename="*Q4_K_M.gguf")`
-downloads and loads just that file. Install with `pip install llama-cpp-python`
-(it builds its own bundled llama.cpp; it does **not** reuse a system install).
+**specific GGUF file** in a HuggingFace repo via `serving.gguf_file` (models) /
+`gguf_file` (judges), passed straight to `Llama.from_pretrained(repo_id,
+filename=...)` — normally the exact file name (a glob is also accepted). Install
+with `pip install llama-cpp-python` (it builds its own bundled llama.cpp; it does
+**not** reuse a system install).
 
 **Sequential loading.** The engine cache holds at most `llamacpp.max_resident`
 models in memory at once (`config/hardware_profile.yaml`, default **1**). Loading

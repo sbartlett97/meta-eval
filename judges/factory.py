@@ -39,6 +39,7 @@ def build_judge(entry: Dict, llamacpp_kwargs: Optional[Dict] = None) -> Judge:
             model_id=entry.get("model", ""),
             judge_id=jid,
             gguf_file=entry.get("gguf_file"),
+            additional_files=entry.get("additional_files"),
             engine_kwargs=dict(llamacpp_kwargs or {}),
         )
 

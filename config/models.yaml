@@ -15,12 +15,20 @@
 
 # Serving engines:
 #   llamacpp -- DEFAULT. In-process GGUF via llama.cpp (harness/llamacpp_engine.py).
-#               Pins one quant file via `serving.gguf_file` and loads models
+#               Pins one GGUF file via `serving.gguf_file` and loads models
 #               sequentially (one resident at a time -- see hardware_profile.yaml
 #               `llamacpp.max_resident`).
 #   ollama   -- local Ollama daemon over HTTP (set `serving.ollama_tag`).
-# `serving.gguf_file` also scopes hydration to that one file, so the whole repo of
-# quants is never downloaded. `hf_allow_patterns` overrides it.
+#
+# `serving.gguf_file` is passed straight to Llama.from_pretrained(filename=...).
+# Prefer the EXACT file name (as in HuggingFace's "Use this model" snippet), e.g.
+#   gguf_file: "Mistral-7B-v0.3.Q4_K_M.gguf"
+# An exact name is reproducible AND makes hydration fail loudly if it's wrong,
+# instead of a glob that silently matches nothing. A glob ("*Q4_K_M.gguf") is
+# still accepted -- handy when you don't want to hardcode the full name -- and is
+# what the shipped entries below use. Either way hydration downloads only that
+# file, never the whole repo of quants. `additional_files` fetches extra parts
+# (e.g. split-GGUF shards) alongside it; `hf_allow_patterns` overrides both.
 local_models:
   - id: "mistral-7b-4bit"
     checkpoint: "unsloth/Mistral-7B-v0.3-GGUF"   # pre-quantized GGUF repo
@@ -29,7 +37,7 @@ local_models:
     context_tokens: 32768
     serving:
       engine: "llamacpp"              # llamacpp (in-process GGUF) | ollama
-      gguf_file: "*Q4_K_M.gguf"       # the exact quant to load from the repo
+      gguf_file: "*Q4_K_M.gguf"       # glob; or an exact name like the example above
       ollama_tag: "mistral:7b"
 
   - id: "llama-2-7b-4bit"
@@ -41,6 +49,15 @@ local_models:
       engine: "llamacpp"
       gguf_file: "*Q4_K_M.gguf"
       ollama_tag: "llama2:7b"
+
+  # Example: an exact GGUF file name, per HuggingFace's llama.cpp snippet. This is
+  # the recommended form. Uncomment to evaluate it (BF16 ~18GB -- check memory).
+  # - id: "qwythos-9b"
+  #   checkpoint: "empero-ai/Qwythos-9B-Claude-Mythos-5-1M-GGUF"
+  #   context_tokens: 32768
+  #   serving:
+  #     engine: "llamacpp"
+  #     gguf_file: "Qwythos-9B-Claude-Mythos-5-1M-BF16.gguf"
 
 # Fine-tuned variants under evaluation. GGUF may not exist -> use a cloud provider.
 fine_tuned_models:

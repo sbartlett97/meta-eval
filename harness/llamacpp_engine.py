@@ -30,7 +30,7 @@ import logging
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -112,21 +112,28 @@ def get_engine(
     repo_id: Optional[str] = None,
     filename: Optional[str] = None,
     model_path: Optional[str] = None,
+    additional_files: Optional[Sequence[str]] = None,
     engine_kwargs: Optional[Dict] = None,
 ) -> "LlamaCppEngine":
     """Return a process-wide cached engine, creating it on first use.
 
-    Provide either ``model_path`` (a local ``.gguf`` file) or ``repo_id`` plus an
-    optional ``filename`` glob selecting one GGUF quant in that HuggingFace repo.
+    Provide either ``model_path`` (a local ``.gguf`` file) or ``repo_id`` plus a
+    ``filename`` naming the GGUF in that HuggingFace repo. As in llama.cpp's
+    ``Llama.from_pretrained`` snippet, ``filename`` is normally the **exact** GGUF
+    file (e.g. ``"model-BF16.gguf"``); a glob (``"*Q4_K_M.gguf"``) is also
+    accepted. ``additional_files`` names extra parts to fetch alongside it (e.g.
+    the remaining shards of a split GGUF), matching ``from_pretrained``'s
+    parameter of the same name.
 
-    Engines are keyed by ``(repo_id, filename)`` / ``model_path``, so two callers
-    that reference the same GGUF share one engine (and one loaded copy of the
-    weights while it is resident).
+    Engines are keyed by ``(repo_id, filename, additional_files)`` / ``model_path``,
+    so two callers that reference the same GGUF share one engine (and one loaded
+    copy of the weights while it is resident).
     """
     if not repo_id and not model_path:
         raise ValueError("get_engine needs either repo_id or model_path")
+    additional_files = list(additional_files or [])
     engine_kwargs = dict(engine_kwargs or {})
-    key = _make_key(repo_id, filename, model_path)
+    key = _make_key(repo_id, filename, model_path, additional_files)
     with _CACHE_LOCK:
         existing = _ENGINE_CACHE.get(key)
         if existing is not None:
@@ -143,6 +150,7 @@ def get_engine(
             repo_id=repo_id,
             filename=filename,
             model_path=model_path,
+            additional_files=additional_files,
             engine_kwargs=engine_kwargs,
             key=key,
         )
@@ -165,11 +173,15 @@ def resident_engines() -> "list[LlamaCppEngine]":
 
 
 def _make_key(
-    repo_id: Optional[str], filename: Optional[str], model_path: Optional[str]
+    repo_id: Optional[str],
+    filename: Optional[str],
+    model_path: Optional[str],
+    additional_files: Optional[Sequence[str]] = None,
 ) -> str:
     if model_path:
         return f"path::{model_path}"
-    return f"hf::{repo_id}::{filename or ''}"
+    extra = "|".join(additional_files or [])
+    return f"hf::{repo_id}::{filename or ''}::{extra}"
 
 
 def _evict_to_fit(incoming: "LlamaCppEngine") -> None:
@@ -204,6 +216,7 @@ class LlamaCppEngine:
     repo_id: Optional[str] = None
     filename: Optional[str] = None
     model_path: Optional[str] = None
+    additional_files: List[str] = field(default_factory=list)
     engine_kwargs: Dict = field(default_factory=dict)
     key: str = ""
     _llm: object = field(default=None, init=False, repr=False)
@@ -235,13 +248,22 @@ class LlamaCppEngine:
         if self.model_path:
             logger.info("Loading GGUF in-process (llama.cpp): %s", self.model_path)
             return Llama(model_path=self.model_path, **self.engine_kwargs)
+        if not self.filename:
+            raise RuntimeError(
+                f"llama.cpp needs a GGUF filename to load {self.repo_id!r} from "
+                "HuggingFace. Set the exact GGUF file name via `gguf_file` "
+                "(models: `serving.gguf_file`, judges: `gguf_file`), e.g. "
+                "'model-Q4_K_M.gguf' — the same value you'd pass to "
+                "Llama.from_pretrained(filename=...)."
+            )
         logger.info(
-            "Loading GGUF in-process (llama.cpp): %s :: %s",
-            self.repo_id,
-            self.filename or "<default>",
+            "Loading GGUF in-process (llama.cpp): %s :: %s", self.repo_id, self.filename
         )
+        from_pretrained_kwargs = dict(self.engine_kwargs)
+        if self.additional_files:
+            from_pretrained_kwargs["additional_files"] = list(self.additional_files)
         return Llama.from_pretrained(
-            repo_id=self.repo_id, filename=self.filename, **self.engine_kwargs
+            repo_id=self.repo_id, filename=self.filename, **from_pretrained_kwargs
         )
 
     def _unload(self) -> None:
