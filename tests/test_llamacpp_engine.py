@@ -210,6 +210,25 @@ def test_model_and_judge_share_one_engine(fake_llama_cpp):
     assert len(_FakeLlama.instances) == 1  # same cached engine, one load
 
 
+def test_batch_judging_loads_each_local_judge_once(fake_llama_cpp):
+    # The reason the panel judges judge-outer: with the resident cap at 1, a
+    # naive row-outer loop would reload each judge every row. evaluate_batch keeps
+    # each judge resident for the whole batch -> one load per judge, not per row.
+    from judges.judge_panel import EvalItem, JudgePanel
+
+    llamacpp_engine.set_max_resident(1)
+    j1 = LocalLlamaCppJudge(model_id="org/a", judge_id="j1", gguf_file="*Q4.gguf")
+    j2 = LocalLlamaCppJudge(model_id="org/b", judge_id="j2", gguf_file="*Q4.gguf")
+    panel = JudgePanel([j1, j2])
+
+    items = [EvalItem(f"t{i}", "out", "crit") for i in range(3)]
+    results = panel.evaluate_batch(items)
+
+    assert len(results) == 3
+    # 2 judges x 1 load each == 2, not 2 judges x 3 items == 6.
+    assert len(_FakeLlama.instances) == 2
+
+
 def test_factory_builds_llamacpp_judge():
     entry = {
         "id": "mistral-7b-local",

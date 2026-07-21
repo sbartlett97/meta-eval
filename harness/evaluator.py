@@ -42,7 +42,7 @@ from harness.hydrate import hydrate_weights
 from harness.model_loader import ModelLoader
 from harness.test_runner import TestRunner
 from judges.factory import build_judges
-from judges.judge_panel import JudgePanel, aggregate_verdicts
+from judges.judge_panel import EvalItem, JudgePanel, aggregate_verdicts
 
 logger = logging.getLogger(__name__)
 
@@ -69,20 +69,25 @@ def run_evaluation(
     logger.info("Judge panel: %s", [j.id for j in judges])
 
     os.makedirs(os.path.dirname(verdicts_path) or ".", exist_ok=True)
-    n = 0
-    with open(outputs_path, "r", encoding="utf-8") as src, open(
-        verdicts_path, "w", encoding="utf-8"
-    ) as sink:
-        for line in src:
-            line = line.strip()
-            if not line:
-                continue
-            row = json.loads(line)
-            result = panel.evaluate(
-                test_id=row["test_id"],
-                model_output=row.get("output", ""),
-                criteria=row.get("criteria", ""),
-            )
+
+    # Read all outputs, then judge the batch judge-outer (each judge processes
+    # every row before the next judge runs). This keeps a sequentially-loaded
+    # local judge resident for all its calls instead of reloading per row.
+    with open(outputs_path, "r", encoding="utf-8") as src:
+        rows = [json.loads(line) for line in src if line.strip()]
+
+    items = [
+        EvalItem(
+            test_id=row["test_id"],
+            model_output=row.get("output", ""),
+            criteria=row.get("criteria", ""),
+        )
+        for row in rows
+    ]
+    results = panel.evaluate_batch(items)
+
+    with open(verdicts_path, "w", encoding="utf-8") as sink:
+        for row, result in zip(rows, results):
             record = {
                 "test_id": row["test_id"],
                 "model": row.get("model"),
@@ -90,9 +95,8 @@ def run_evaluation(
                 "consensus": aggregate_verdicts(result),
             }
             sink.write(json.dumps(record) + "\n")
-            n += 1
 
-    logger.info("Wrote %d verdict rows to %s", n, verdicts_path)
+    logger.info("Wrote %d verdict rows to %s", len(rows), verdicts_path)
     logger.info("Cost/latency summary: %s", panel.cost_summary())
     return verdicts_path
 

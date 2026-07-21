@@ -8,7 +8,7 @@ import yaml
 from harness.test_suite import load_test_suite
 from judges.base import Judge, Verdict
 from judges.factory import build_judges
-from judges.judge_panel import JudgePanel, aggregate_verdicts
+from judges.judge_panel import EvalItem, JudgePanel, aggregate_verdicts
 
 
 def test_load_example_suite():
@@ -76,6 +76,30 @@ def test_aggregate_tie_broken_by_confidence():
 def test_panel_requires_a_judge():
     with pytest.raises(ValueError):
         JudgePanel([])
+
+
+def test_evaluate_batch_is_judge_outer():
+    calls = []
+
+    class _RecordingJudge(Judge):
+        def __init__(self, jid):
+            super().__init__()
+            self.id = jid
+
+        def _evaluate(self, test_id, model_output, criteria):
+            calls.append((self.id, test_id))
+            return Verdict("PASS", 1.0, self.id, test_id)
+
+    panel = JudgePanel([_RecordingJudge("a"), _RecordingJudge("b")])
+    items = [EvalItem("t1", "o1", "c1"), EvalItem("t2", "o2", "c2")]
+    results = panel.evaluate_batch(items)
+
+    # Judge a processes every item before judge b starts (judge-outer).
+    assert calls == [("a", "t1"), ("a", "t2"), ("b", "t1"), ("b", "t2")]
+    # Per-item results still carry both judges' verdicts, in judge order.
+    assert results[0].test_id == "t1"
+    assert [v.judge_id for v in results[0].verdicts] == ["a", "b"]
+    assert [v.judge_id for v in results[1].verdicts] == ["a", "b"]
 
 
 def test_factory_builds_from_config():

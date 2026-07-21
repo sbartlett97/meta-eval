@@ -18,6 +18,15 @@ from judges.base import Judge, Verdict
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class EvalItem:
+    """One (test, model output) pair to judge -- the unit of :meth:`evaluate_batch`."""
+
+    test_id: str
+    model_output: str
+    criteria: str = ""
+
+
 @dataclass
 class PanelResult:
     """All judges' verdicts for a single (test, model output) pair."""
@@ -43,6 +52,25 @@ class JudgePanel:
             judge.evaluate(test_id, model_output, criteria) for judge in self.judges
         ]
         return PanelResult(test_id=test_id, verdicts=verdicts)
+
+    def evaluate_batch(self, items: Sequence[EvalItem]) -> List[PanelResult]:
+        """Evaluate many outputs **judge-outer, item-inner**.
+
+        Same per-item verdicts as calling :meth:`evaluate` on each item (verdicts
+        stay in ``self.judges`` order), but every judge processes the whole batch
+        before the next judge runs. That keeps a locally-served judge's weights
+        resident for all of its calls instead of reloading per item: with the
+        llama.cpp resident cap (see :mod:`harness.llamacpp_engine`) a panel of two
+        local judges loads each once per batch, not once per row.
+        """
+        items = list(items)
+        results = [PanelResult(test_id=item.test_id) for item in items]
+        for judge in self.judges:
+            for item, result in zip(items, results):
+                result.verdicts.append(
+                    judge.evaluate(item.test_id, item.model_output, item.criteria)
+                )
+        return results
 
     def cost_summary(self) -> Dict[str, dict]:
         """Aggregate per-judge latency/token stats from call logs."""

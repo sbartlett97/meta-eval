@@ -199,6 +199,11 @@ engine transparently reloads on next use. So a test model and the judges never
 all hold weights simultaneously. Raise `max_resident` to keep both local judges
 resident if the memory budget allows.
 
+To keep this cheap, the judge panel evaluates **judge-outer** (`JudgePanel.
+evaluate_batch`): every judge scores the whole batch of outputs before the next
+judge runs, so each local judge loads once per run rather than reloading for each
+row.
+
 ```yaml
 # config/models.yaml
 local_models:
