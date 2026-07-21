@@ -94,14 +94,14 @@ def collect_weights(
             _add(specs, WeightSpec(
                 repo_id=repo,
                 source=f"{group}:{entry.get('id', repo)}",
-                allow_patterns=entry.get("hf_allow_patterns"),
+                allow_patterns=_allow_patterns(entry),
             ))
 
     if include_judges:
         judges = _as_dict(judges_config)
         for entry in judges.get("judges", []) or []:
-            if entry.get("access") != "vllm":
-                continue  # only in-process vLLM judges have local weights
+            if entry.get("access") not in ("vllm", "llamacpp"):
+                continue  # only in-process local judges have weights to download
             if only_enabled_judges and not entry.get("enabled", True):
                 continue
             if judge_max_priority is not None and entry.get("priority", 1) > judge_max_priority:
@@ -112,7 +112,7 @@ def collect_weights(
             _add(specs, WeightSpec(
                 repo_id=repo,
                 source=f"judges:{entry.get('id', repo)}",
-                allow_patterns=entry.get("hf_allow_patterns"),
+                allow_patterns=_allow_patterns(entry),
             ))
 
     return list(specs.values())
@@ -184,6 +184,23 @@ def hydrate_weights(
 # ---------------------------------------------------------------------- #
 def _add(specs: "Dict[str, WeightSpec]", spec: WeightSpec) -> None:
     specs.setdefault(spec.repo_id, spec)
+
+
+def _allow_patterns(entry: Dict) -> Optional[List[str]]:
+    """HF download globs for one config entry.
+
+    Explicit ``hf_allow_patterns`` win. Otherwise, when the entry selects a
+    specific GGUF (``gguf_file`` for a judge, or ``serving.gguf_file`` for a
+    model), scope the download to that file so hydration pulls only the one quant
+    the llama.cpp engine will load — not the whole repo of quants.
+    """
+    explicit = entry.get("hf_allow_patterns")
+    if explicit:
+        return explicit
+    gguf = entry.get("gguf_file") or (entry.get("serving", {}) or {}).get("gguf_file")
+    if gguf:
+        return [gguf]
+    return None
 
 
 def _import_snapshot_download():

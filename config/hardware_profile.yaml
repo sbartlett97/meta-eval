@@ -24,3 +24,22 @@ vllm_defaults:
   dtype: "auto"                  # infer from checkpoint
   enable_prefix_caching: true    # reuse shared prompt prefixes
   # quantization: "gguf"         # uncomment if vLLM needs an explicit hint
+
+# Default in-process llama.cpp engine parameters. Passed to
+# `llama_cpp.Llama(model_path=..., **x)` (harness/llamacpp_engine.py) for every
+# GGUF checkpoint served with `engine: llamacpp` / `access: llamacpp`. This is
+# the recommended local backend: GGUF-native (points at a specific quant file)
+# and loads models sequentially. SAM MUST VERIFY these against the M5.
+llamacpp_defaults:
+  n_ctx: 2048                    # context window
+  n_gpu_layers: -1               # -1 => offload all layers to Metal
+  n_batch: 512                   # prompt batch size
+  verbose: false
+
+# llama.cpp serving policy (harness-only, not passed to `Llama(...)`).
+llamacpp:
+  # How many models may be resident in memory at once. 1 => strict sequential
+  # loading: loading a model frees the previously-loaded one first, so a test
+  # model and the judges never all hold weights simultaneously. Raise to 2 to
+  # keep both local judges resident if the memory budget allows.
+  max_resident: 1

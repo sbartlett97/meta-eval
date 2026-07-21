@@ -7,9 +7,11 @@
 # (harness/vllm_engine.py); the heuristic baseline is deterministic and in-process.
 #
 # `access` values:
-#   api    -> hosted provider endpoint (Anthropic / OpenAI / Replicate)
-#   vllm   -> local checkpoint loaded IN-PROCESS via vLLM (no server, no port)
-#   none   -> deterministic, no network call
+#   api      -> hosted provider endpoint (Anthropic / OpenAI / Replicate)
+#   llamacpp -> local GGUF loaded IN-PROCESS via llama.cpp (recommended local
+#               backend; pins a specific quant via `gguf_file`, loads sequentially)
+#   vllm     -> local checkpoint loaded IN-PROCESS via vLLM (no server, no port)
+#   none     -> deterministic, no network call
 #
 # `priority` is used by the panel to select a subset when running cheap/fast
 # pilots (lower number = run first / always). See PRD "Decision 3: Judge
@@ -33,11 +35,13 @@ judges:
     priority: 1
     enabled: true
 
-  # ---- Local judges (served via vLLM) ----------------------------------
+  # ---- Local judges (served IN-PROCESS via llama.cpp / GGUF) ------------
+  # `gguf_file` pins one quant in the repo and also scopes hydration to it.
   - id: "mistral-7b-local"
     provider: "local"
     model: "unsloth/Mistral-7B-v0.3-GGUF"
-    access: "vllm"
+    access: "llamacpp"
+    gguf_file: "*Q4_K_M.gguf"
     cost_per_1k_tokens: 0.0
     priority: 2
     enabled: true
@@ -45,7 +49,8 @@ judges:
   - id: "llama-7b-local"
     provider: "local"
     model: "unsloth/Llama-2-7b-GGUF"
-    access: "vllm"
+    access: "llamacpp"
+    gguf_file: "*Q4_K_M.gguf"
     cost_per_1k_tokens: 0.0
     priority: 2
     enabled: true

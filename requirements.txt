@@ -28,13 +28,15 @@ pytest>=7.4.0
 pytest-cov>=4.1.0
 
 # --- Optional: local model serving -------------------------------------
-# Heavy and platform-specific, so kept out of the core install. Local vLLM models
-# and judges now load the checkpoint IN-PROCESS via `import vllm`
-# (harness/vllm_engine.py) rather than shelling out to a server, so vLLM must be
-# installed to evaluate any local (`engine: vllm` / `access: vllm`) entry. Ollama
-# is still talked to over HTTP. Install the backend you use, separately:
-#   vLLM:   pip install "vllm>=0.3.0"
-#   Ollama: brew install ollama   (or `pip install ollama` for the Python client)
+# Heavy and platform-specific, so kept out of the core install. Local models and
+# judges load their checkpoint IN-PROCESS (no server); install the backend you
+# use, separately:
+#   llama.cpp: pip install llama-cpp-python   (RECOMMENDED for local GGUF)
+#       GGUF-native and Metal-friendly. Loads a specific quant file from an HF
+#       repo (`engine: llamacpp` / `access: llamacpp`, harness/llamacpp_engine.py)
+#       and serves models sequentially. See its docs for a Metal/CUDA build.
+#   vLLM:      pip install "vllm>=0.3.0"      (`engine: vllm` / `access: vllm`)
+#   Ollama:    brew install ollama            (or `pip install ollama`)
 
 # --- Optional: meta-evaluation / analysis stack ------------------------
 # Not imported by any current module; reserved for the meta-evaluation analysis

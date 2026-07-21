@@ -37,8 +37,9 @@ takes the filters; the evaluator passes them).
 harness/
   evaluator.py        # CLI: hydrate → generate → judge
   hydrate.py          # download open weights from HuggingFace at startup
+  llamacpp_engine.py  # in-process llama.cpp GGUF engines (sequential loading)
   vllm_engine.py      # in-process vLLM engines (lazy load, process-wide cache)
-  model_loader.py     # load models UNDER TEST (ollama / in-process vllm / cloud)
+  model_loader.py     # load models UNDER TEST (llamacpp / ollama / vllm / cloud)
   test_runner.py      # run a suite against models, persist raw outputs
   test_suite.py       # .jsonl suite schema + loader
 judges/
@@ -61,7 +62,17 @@ tests/                   # unit tests for the deterministic, network-free parts
 
 ## Key architectural facts
 
-- **Local models and judges run in-process via vLLM.** There is no separate
+- **llama.cpp is the recommended local backend (GGUF-native, sequential).**
+  `harness/llamacpp_engine.py` loads a *specific* GGUF quant from an HF repo —
+  `Llama.from_pretrained(repo_id, filename="*Q4_K_M.gguf")` — selected by
+  `serving.gguf_file` (models) / `gguf_file` (judges), which also scopes what
+  hydration downloads. Its cache holds at most `max_resident` models at once
+  (`config/hardware_profile.yaml → llamacpp.max_resident`, default 1), so loading
+  a new model frees the previous one (`Llama.close()`) — unlike the vLLM cache,
+  which keeps every checkpoint resident. Construct engines via
+  `llamacpp_engine.get_engine(...)`; wire via `engine: llamacpp` / `access:
+  llamacpp`. Needs `pip install llama-cpp-python`.
+- **Local models and judges can also run in-process via vLLM.** There is no separate
   `vllm serve` process and no HTTP hop. `harness/vllm_engine.py` loads a
   checkpoint with `vllm.LLM(...)` the first time `generate` is called and caches
   the engine **process-wide, keyed by checkpoint** — so a test model and a judge
@@ -90,7 +101,8 @@ tests/                   # unit tests for the deterministic, network-free parts
 
 ```bash
 pip install -r requirements.txt          # core deps (pure-Python; incl. huggingface_hub)
-pip install "vllm>=0.3.0"                # needed for any local (engine/access: vllm) entry
+pip install llama-cpp-python             # recommended local GGUF backend (engine/access: llamacpp)
+pip install "vllm>=0.3.0"                # alternative local backend (engine/access: vllm)
 
 pytest                                    # run the (network-free) unit tests
 

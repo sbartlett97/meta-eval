@@ -121,7 +121,9 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         choices=sorted(_JUDGE_PRESETS),
         help="Judge subset preset.",
     )
-    parser.add_argument("--prefer-engine", default="ollama", choices=["ollama", "vllm"])
+    parser.add_argument(
+        "--prefer-engine", default="ollama", choices=["ollama", "llamacpp", "vllm"]
+    )
     parser.add_argument(
         "--no-judge",
         action="store_true",

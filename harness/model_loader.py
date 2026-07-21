@@ -6,16 +6,19 @@ same cache the local *judge* models use, so a shared checkpoint is loaded once.
 
 Design (PRD "Decision 2: Test Model Loading"): a single ``ModelLoader.load()``
 returns an object exposing ``generate(prompt) -> str``, regardless of backend.
-Three backends are supported so Sam can pick without touching call sites:
+Four backends are supported so Sam can pick without touching call sites:
 
+    * ``llamacpp`` -- **in-process** llama.cpp engine (``harness.llamacpp_engine``).
+      GGUF-native: points at a *specific* quant file inside an HF repo and loads
+      models sequentially (one resident at a time by default). Recommended for
+      local GGUF serving on the M5.
     * ``ollama``   -- recommended on Apple Silicon; pre-built quantized models.
     * ``vllm``     -- **in-process** vLLM engine (``harness.vllm_engine``); the
       checkpoint is loaded in-process and inference runs in-line, with no
       separately-started server and no HTTP hop.
     * ``replicate``/``api`` -- cloud fallback for models too large for local.
 
-The recommended default is Ollama (PRD "Option A: Ollama-based (Recommended for
-Mac)"). BitsAndBytes runtime quantization is intentionally not used.
+BitsAndBytes runtime quantization is intentionally not used.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from typing import Dict, Optional, Protocol
 import requests
 import yaml
 
+from harness import llamacpp_engine
 from harness.vllm_engine import engine_kwargs_from_profile, get_engine
 
 logger = logging.getLogger(__name__)
@@ -99,6 +103,34 @@ class VLLMModel:
 
 
 @dataclass
+class LlamaCppModel:
+    """Test model served by an **in-process** llama.cpp (GGUF) engine.
+
+    Pinned to one GGUF quant (``gguf_file`` glob) inside ``repo_id`` and loaded
+    in-process via :mod:`harness.llamacpp_engine`, which loads models sequentially
+    so a test model and the judges never all hold weights at once. ``engine_kwargs``
+    come from the hardware profile's ``llamacpp_defaults``.
+    """
+
+    id: str
+    repo_id: str
+    filename: Optional[str] = None
+    engine_kwargs: Dict = field(default_factory=dict)
+
+    def generate(self, prompt: str, **kwargs) -> str:
+        engine = llamacpp_engine.get_engine(
+            repo_id=self.repo_id,
+            filename=self.filename,
+            engine_kwargs=self.engine_kwargs,
+        )
+        return engine.generate(
+            prompt,
+            max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+            temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
+        )
+
+
+@dataclass
 class ReplicateModel:
     """Cloud fallback for large models (e.g. Llama 3.1 70B). Scaffold only.
 
@@ -125,12 +157,13 @@ class ModelLoader:
     Args:
         models_config: Parsed models.yaml dict, or a path to it.
         prefer_engine: Which local backend to use for local models when the
-            config lists more than one option. ``"ollama"`` (default) or
-            ``"vllm"``.
+            config lists more than one option. ``"ollama"`` (default),
+            ``"llamacpp"``, or ``"vllm"``.
         ensure_daemon: If True and using Ollama, attempt to start the daemon.
         hardware_profile: Parsed ``config/hardware_profile.yaml`` dict, or a path
-            to it. Supplies the in-process vLLM engine kwargs (``gpu_memory_
-            utilization``, ``max_model_len``, ...). Optional; sensible vLLM
+            to it. Supplies the in-process engine kwargs (vLLM ``gpu_memory_
+            utilization`` / ``max_model_len`` ...; llama.cpp ``n_ctx`` /
+            ``n_gpu_layers`` ... and the ``max_resident`` cap). Optional; sensible
             defaults apply when omitted.
     """
 
@@ -144,7 +177,13 @@ class ModelLoader:
         self.config = _as_dict(models_config)
         self.prefer_engine = prefer_engine
         self.ensure_daemon = ensure_daemon
-        self._engine_kwargs = engine_kwargs_from_profile(_as_dict(hardware_profile))
+        profile = _as_dict(hardware_profile)
+        self._engine_kwargs = engine_kwargs_from_profile(profile)
+        self._llamacpp_kwargs = llamacpp_engine.engine_kwargs_from_profile(profile)
+        # Apply the resident-model cap so llama.cpp loads sequentially.
+        llamacpp_engine.set_max_resident(
+            llamacpp_engine.max_resident_from_profile(profile)
+        )
         self._cache: Dict[str, GenerativeModel] = {}
         self._index = self._build_index()
 
@@ -187,6 +226,14 @@ class ModelLoader:
                 id=model_id,
                 checkpoint=entry["checkpoint"],
                 engine_kwargs=dict(self._engine_kwargs),
+            )
+
+        if engine == "llamacpp":
+            return LlamaCppModel(
+                id=model_id,
+                repo_id=entry["checkpoint"],
+                filename=serving.get("gguf_file"),
+                engine_kwargs=dict(self._llamacpp_kwargs),
             )
 
         raise ValueError(f"Unsupported serving engine {engine!r} for {model_id!r}")
