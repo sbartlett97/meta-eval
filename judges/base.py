@@ -1,7 +1,7 @@
 """Judge base class + verdict types (PRD v3.1).
 
 All judges share one interface so the panel can call Claude, GPT-4, a local
-vLLM model, or the heuristic baseline through identical code.
+llama.cpp model, or the heuristic baseline through identical code.
 """
 
 from __future__ import annotations

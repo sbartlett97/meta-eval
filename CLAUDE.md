@@ -38,8 +38,7 @@ harness/
   evaluator.py        # CLI: hydrate → generate → judge
   hydrate.py          # download open weights from HuggingFace at startup
   llamacpp_engine.py  # in-process llama.cpp GGUF engines (sequential loading)
-  vllm_engine.py      # in-process vLLM engines (lazy load, process-wide cache)
-  model_loader.py     # load models UNDER TEST (llamacpp / ollama / vllm / cloud)
+  model_loader.py     # load models UNDER TEST (llamacpp / ollama / cloud)
   test_runner.py      # run a suite against models, persist raw outputs
   test_suite.py       # .jsonl suite schema + loader
 judges/
@@ -47,41 +46,35 @@ judges/
   prompts.py          # shared judge prompt template + JSON response parser
   claude_judge.py     # Anthropic API judge
   gpt4_judge.py       # OpenAI API judge
-  local_vllm_judge.py # base for local in-process vLLM judges
-  mistral_local_judge.py / llama_local_judge.py  # id + default-checkpoint subclasses
+  local_llamacpp_judge.py # local in-process llama.cpp (GGUF) judge
   heuristic_judge.py  # deterministic, zero-network baseline
   factory.py          # build judges from config/judges.yaml
   judge_panel.py      # fan out to the panel + naive consensus (placeholder)
 config/
   models.yaml           # models under test (local + cloud)
   judges.yaml           # judge panel (provider / access / priority / enabled)
-  hardware_profile.yaml # in-process vLLM engine kwargs + budgets
+  hardware_profile.yaml # in-process llama.cpp engine kwargs + budgets
 data/test_suite_v1.jsonl # EXAMPLE 3-row schema only (real suite is [Sam])
 tests/                   # unit tests for the deterministic, network-free parts
 ```
 
 ## Key architectural facts
 
-- **llama.cpp is the recommended local backend (GGUF-native, sequential).**
+- **llama.cpp is the local serving backend (GGUF-native, sequential).**
   `harness/llamacpp_engine.py` loads a *specific* GGUF quant from an HF repo —
   `Llama.from_pretrained(repo_id, filename="*Q4_K_M.gguf")` — selected by
   `serving.gguf_file` (models) / `gguf_file` (judges), which also scopes what
   hydration downloads. Its cache holds at most `max_resident` models at once
   (`config/hardware_profile.yaml → llamacpp.max_resident`, default 1), so loading
-  a new model frees the previous one (`Llama.close()`) — unlike the vLLM cache,
-  which keeps every checkpoint resident. Construct engines via
-  `llamacpp_engine.get_engine(...)`; wire via `engine: llamacpp` / `access:
-  llamacpp`. Needs `pip install llama-cpp-python`.
-- **Local models and judges can also run in-process via vLLM.** There is no separate
-  `vllm serve` process and no HTTP hop. `harness/vllm_engine.py` loads a
-  checkpoint with `vllm.LLM(...)` the first time `generate` is called and caches
-  the engine **process-wide, keyed by checkpoint** — so a test model and a judge
-  that share a checkpoint reuse one loaded copy of the weights. Construct engines
-  via `get_engine(model, engine_kwargs)`, never `InProcessVLLM(...)` directly.
-- **Loading is lazy and import-light.** Constructing a `VLLMModel`, a judge, or an
-  `InProcessVLLM` must NOT import vLLM or load weights — that only happens on the
-  first `generate`. Keep it that way so the config/factory paths and the whole
-  test suite run without vLLM installed.
+  a new model frees the previous one (`Llama.close()`); an evicted engine reloads
+  on next use. Construct engines via `llamacpp_engine.get_engine(...)`, never
+  `LlamaCppEngine(...)` directly; wire via `engine: llamacpp` / `access:
+  llamacpp`. Needs `pip install llama-cpp-python`. (Ollama remains an alternative
+  backend for models under test, over HTTP.)
+- **Loading is lazy and import-light.** Constructing a `LlamaCppModel`, a judge,
+  or a `LlamaCppEngine` must NOT import `llama_cpp` or load weights — that only
+  happens on the first `generate`. Keep it that way so the config/factory paths
+  and the whole test suite run without llama-cpp-python installed.
 - **Every judge implements the same contract:**
   `Judge.evaluate(test_id, model_output, criteria) -> Verdict`. The base class
   wraps `_evaluate`, so a judge that raises becomes an `AMBIGUOUS` verdict with
@@ -89,20 +82,20 @@ tests/                   # unit tests for the deterministic, network-free parts
   subclassing `Judge`, implementing `_evaluate`, and wiring them into
   `judges/factory.py`.
 - **Heavy deps are imported lazily** inside the method that needs them (`anthropic`,
-  `openai`, `vllm`, `huggingface_hub`), each with a clear install message on
+  `openai`, `llama_cpp`, `huggingface_hub`), each with a clear install message on
   `ImportError`. Preserve this pattern — the core `pip install -r requirements.txt`
   must stay pure-Python and cross-platform.
 - **Config drives everything.** Models, judges, and hardware knobs live in
-  `config/*.yaml`; loaders accept either a parsed dict or a path. `vllm.LLM`
-  kwargs come from `hardware_profile.yaml → vllm_defaults` via
-  `engine_kwargs_from_profile` (which filters to valid constructor keys).
+  `config/*.yaml`; loaders accept either a parsed dict or a path. `llama_cpp.Llama`
+  kwargs come from `hardware_profile.yaml → llamacpp_defaults` via
+  `llamacpp_engine.engine_kwargs_from_profile` (which filters to valid constructor
+  keys); the resident-model cap comes from `llamacpp.max_resident`.
 
 ## Common commands
 
 ```bash
 pip install -r requirements.txt          # core deps (pure-Python; incl. huggingface_hub)
-pip install llama-cpp-python             # recommended local GGUF backend (engine/access: llamacpp)
-pip install "vllm>=0.3.0"                # alternative local backend (engine/access: vllm)
+pip install llama-cpp-python             # local GGUF backend (engine/access: llamacpp)
 
 pytest                                    # run the (network-free) unit tests
 
@@ -129,9 +122,9 @@ API judges only), `pilot`.
 
 - Tests live in `tests/` and cover only the **deterministic, network-free** parts.
   `pytest.ini` sets `pythonpath = .` so `import harness` / `import judges` work.
-- Never hit the network or load real weights in a test. To exercise vLLM /
+- Never hit the network or load real weights in a test. To exercise llama.cpp /
   HuggingFace wiring, inject a fake module into `sys.modules` (see
-  `tests/test_vllm_engine_and_hydrate.py`) and call `vllm_engine.reset_engines()`
+  `tests/test_llamacpp_engine.py`) and call `llamacpp_engine.reset_engines()`
   to clear the process-wide cache between tests.
 - Any change to `harness/`, `judges/`, or the config schema should keep `pytest`
   green and, where it adds logic, come with a network-free test.
@@ -144,8 +137,9 @@ Don't quietly implement these; they're deliberate decisions:
 - **The meta-evaluation methodology** — `judges.judge_panel.aggregate_verdicts` is
   a naive majority vote placeholder; inter-judge agreement, bias detection, and
   reliability weighting are unbuilt.
-- **On-hardware verification** — vLLM engine kwargs, the 32GB budget, and GGUF
-  handling in `config/hardware_profile.yaml` are unverified on the M5.
+- **On-hardware verification** — the llama.cpp engine kwargs (`n_ctx`,
+  `n_gpu_layers`), the `max_resident` cap, and the 32GB budget in
+  `config/hardware_profile.yaml` are unverified on the M5.
 - **Cloud fallback** — `harness.model_loader.ReplicateModel.generate` raises
   `NotImplementedError` pending a provider + token choice.
 

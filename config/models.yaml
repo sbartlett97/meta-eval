@@ -3,7 +3,7 @@
 # Model catalogue for the behavioral-invariance eval harness (PRD v3.1).
 #
 # Two roles are represented here:
-#   * `local_models`  -- pre-quantized checkpoints served locally (vLLM / Ollama).
+#   * `local_models`  -- pre-quantized checkpoints served locally (llama.cpp / Ollama).
 #   * `remote_models` -- API-hosted models (no local serving required).
 #
 # Everything is checkpoint-driven, NOT runtime-quantization-driven: the checkpoint
@@ -13,15 +13,14 @@
 # conversions are not always available for fine-tuned variants -- fall back to a
 # cloud provider (e.g. Replicate) where noted.
 
-# Serving engines (all load IN-PROCESS -- no separate server, no port, except
-# ollama which talks to the local daemon over HTTP):
-#   llamacpp -- RECOMMENDED. GGUF-native (harness/llamacpp_engine.py). Pins one
-#               quant file via `serving.gguf_file` and loads models sequentially
-#               (one resident at a time -- see hardware_profile.yaml llamacpp).
-#   vllm     -- in-process vLLM (harness/vllm_engine.py); loads the whole repo.
-#   ollama   -- local Ollama daemon over HTTP.
-# `serving.gguf_file` (llamacpp) also scopes hydration to that one file, so the
-# whole repo of quants is never downloaded. `hf_allow_patterns` overrides it.
+# Serving engines:
+#   llamacpp -- DEFAULT. In-process GGUF via llama.cpp (harness/llamacpp_engine.py).
+#               Pins one quant file via `serving.gguf_file` and loads models
+#               sequentially (one resident at a time -- see hardware_profile.yaml
+#               `llamacpp.max_resident`).
+#   ollama   -- local Ollama daemon over HTTP (set `serving.ollama_tag`).
+# `serving.gguf_file` also scopes hydration to that one file, so the whole repo of
+# quants is never downloaded. `hf_allow_patterns` overrides it.
 local_models:
   - id: "mistral-7b-4bit"
     checkpoint: "unsloth/Mistral-7B-v0.3-GGUF"   # pre-quantized GGUF repo
@@ -29,7 +28,7 @@ local_models:
     size_gb: 4.2
     context_tokens: 32768
     serving:
-      engine: "llamacpp"              # llamacpp (in-process GGUF) | vllm | ollama
+      engine: "llamacpp"              # llamacpp (in-process GGUF) | ollama
       gguf_file: "*Q4_K_M.gguf"       # the exact quant to load from the repo
       ollama_tag: "mistral:7b"
 

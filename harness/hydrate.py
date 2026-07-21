@@ -2,20 +2,22 @@
 
 When the harness starts we "hydrate" it: the open-weight checkpoints the run
 needs are pre-downloaded from the HuggingFace Hub into the local HF cache.
-Because generation now loads vLLM engines in-process (see
-:mod:`harness.vllm_engine`), the first ``generate`` call would otherwise block on
-a multi-gigabyte download mid-run. Hydrating up front makes that cost explicit,
-lets it happen once, and surfaces auth errors on gated repos (e.g. Llama-2)
-immediately instead of deep inside an evaluation.
+Because generation loads llama.cpp engines in-process (see
+:mod:`harness.llamacpp_engine`), the first ``generate`` call would otherwise
+block on a multi-gigabyte download mid-run. Hydrating up front makes that cost
+explicit, lets it happen once, and surfaces auth errors on gated repos (e.g.
+Llama-2) immediately instead of deep inside an evaluation.
 
 ``snapshot_download`` is idempotent: already-cached repos are verified and
 skipped, so hydrating on every start is cheap after the first run.
 
 What counts as an "open weight" here: any config entry that is served locally and
 carries a HuggingFace checkpoint id — the ``local_models`` and (non-cloud)
-``fine_tuned_models`` in ``config/models.yaml`` plus the ``access: vllm`` judges
-in ``config/judges.yaml``. Cloud/API models (Anthropic, OpenAI, Replicate) have
-no local weights and are skipped.
+``fine_tuned_models`` in ``config/models.yaml`` plus the ``access: llamacpp``
+judges in ``config/judges.yaml``. When an entry pins a specific GGUF quant
+(``gguf_file`` / ``serving.gguf_file``) the download is scoped to that one file.
+Cloud/API models (Anthropic, OpenAI, Replicate) have no local weights and are
+skipped.
 
 Hydration is **scoped to the run**: :func:`collect_weights` takes filters so the
 evaluator only pulls the models it will actually generate with and the judges it
@@ -100,8 +102,8 @@ def collect_weights(
     if include_judges:
         judges = _as_dict(judges_config)
         for entry in judges.get("judges", []) or []:
-            if entry.get("access") not in ("vllm", "llamacpp"):
-                continue  # only in-process local judges have weights to download
+            if entry.get("access") != "llamacpp":
+                continue  # only local (llama.cpp) judges have weights to download
             if only_enabled_judges and not entry.get("enabled", True):
                 continue
             if judge_max_priority is not None and entry.get("priority", 1) > judge_max_priority:

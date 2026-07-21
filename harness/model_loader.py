@@ -1,21 +1,18 @@
 """Model Loader for *test* models (PRD v3.1).
 
-This loads the models being EVALUATED (not the judges). Local vLLM models are
-loaded in-process through the shared ``harness.vllm_engine`` engine cache — the
-same cache the local *judge* models use, so a shared checkpoint is loaded once.
+This loads the models being EVALUATED (not the judges). Local GGUF models are
+loaded in-process through the shared ``harness.llamacpp_engine`` engine cache —
+the same cache the local *judge* models use, so a shared GGUF is loaded once.
 
 Design (PRD "Decision 2: Test Model Loading"): a single ``ModelLoader.load()``
 returns an object exposing ``generate(prompt) -> str``, regardless of backend.
-Four backends are supported so Sam can pick without touching call sites:
+Three backends are supported so Sam can pick without touching call sites:
 
     * ``llamacpp`` -- **in-process** llama.cpp engine (``harness.llamacpp_engine``).
-      GGUF-native: points at a *specific* quant file inside an HF repo and loads
-      models sequentially (one resident at a time by default). Recommended for
-      local GGUF serving on the M5.
-    * ``ollama``   -- recommended on Apple Silicon; pre-built quantized models.
-    * ``vllm``     -- **in-process** vLLM engine (``harness.vllm_engine``); the
-      checkpoint is loaded in-process and inference runs in-line, with no
-      separately-started server and no HTTP hop.
+      The default local backend. GGUF-native: points at a *specific* quant file
+      inside an HF repo and loads models sequentially (one resident at a time by
+      default).
+    * ``ollama``   -- local Ollama daemon over HTTP; pre-built quantized models.
     * ``replicate``/``api`` -- cloud fallback for models too large for local.
 
 BitsAndBytes runtime quantization is intentionally not used.
@@ -33,7 +30,6 @@ import requests
 import yaml
 
 from harness import llamacpp_engine
-from harness.vllm_engine import engine_kwargs_from_profile, get_engine
 
 logger = logging.getLogger(__name__)
 
@@ -78,28 +74,6 @@ class OllamaModel:
         )
         resp.raise_for_status()
         return resp.json().get("response", "")
-
-
-@dataclass
-class VLLMModel:
-    """Test model served by an **in-process** vLLM engine (no separate server).
-
-    The checkpoint is loaded in-process via :mod:`harness.vllm_engine` and shared
-    process-wide, so ``generate`` is an in-line call — not an HTTP request to a
-    ``vllm serve`` process. ``engine_kwargs`` come from the hardware profile.
-    """
-
-    id: str
-    checkpoint: str
-    engine_kwargs: Dict = field(default_factory=dict)
-
-    def generate(self, prompt: str, **kwargs) -> str:
-        engine = get_engine(self.checkpoint, self.engine_kwargs)
-        return engine.generate(
-            prompt,
-            max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
-            temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
-        )
 
 
 @dataclass
@@ -156,21 +130,19 @@ class ModelLoader:
 
     Args:
         models_config: Parsed models.yaml dict, or a path to it.
-        prefer_engine: Which local backend to use for local models when the
-            config lists more than one option. ``"ollama"`` (default),
-            ``"llamacpp"``, or ``"vllm"``.
+        prefer_engine: Local backend to use when a model entry does not name one
+            in ``serving.engine``. ``"llamacpp"`` (default) or ``"ollama"``.
         ensure_daemon: If True and using Ollama, attempt to start the daemon.
         hardware_profile: Parsed ``config/hardware_profile.yaml`` dict, or a path
-            to it. Supplies the in-process engine kwargs (vLLM ``gpu_memory_
-            utilization`` / ``max_model_len`` ...; llama.cpp ``n_ctx`` /
-            ``n_gpu_layers`` ... and the ``max_resident`` cap). Optional; sensible
+            to it. Supplies the in-process llama.cpp engine kwargs (``n_ctx`` /
+            ``n_gpu_layers`` ...) and the ``max_resident`` cap. Optional; sensible
             defaults apply when omitted.
     """
 
     def __init__(
         self,
         models_config,
-        prefer_engine: str = "ollama",
+        prefer_engine: str = "llamacpp",
         ensure_daemon: bool = True,
         hardware_profile=None,
     ) -> None:
@@ -178,7 +150,6 @@ class ModelLoader:
         self.prefer_engine = prefer_engine
         self.ensure_daemon = ensure_daemon
         profile = _as_dict(hardware_profile)
-        self._engine_kwargs = engine_kwargs_from_profile(profile)
         self._llamacpp_kwargs = llamacpp_engine.engine_kwargs_from_profile(profile)
         # Apply the resident-model cap so llama.cpp loads sequentially.
         llamacpp_engine.set_max_resident(
@@ -209,24 +180,10 @@ class ModelLoader:
         if provider in {"replicate", "anthropic", "openai"}:
             return ReplicateModel(id=model_id, model=entry.get("model", model_id))
 
+        # The model entry names its engine in ``serving.engine``; the loader's
+        # ``prefer_engine`` is only the fallback when it doesn't.
         serving = entry.get("serving", {})
-        engine = self.prefer_engine if serving else "ollama"
-        if serving.get("engine") and self.prefer_engine not in serving:
-            engine = serving["engine"]
-
-        if engine == "ollama":
-            tag = serving.get("ollama_tag") or model_id
-            if self.ensure_daemon:
-                _ensure_ollama_daemon()
-                _ollama_pull(tag)
-            return OllamaModel(id=model_id, tag=tag)
-
-        if engine == "vllm":
-            return VLLMModel(
-                id=model_id,
-                checkpoint=entry["checkpoint"],
-                engine_kwargs=dict(self._engine_kwargs),
-            )
+        engine = serving.get("engine") or self.prefer_engine
 
         if engine == "llamacpp":
             return LlamaCppModel(
@@ -235,6 +192,13 @@ class ModelLoader:
                 filename=serving.get("gguf_file"),
                 engine_kwargs=dict(self._llamacpp_kwargs),
             )
+
+        if engine == "ollama":
+            tag = serving.get("ollama_tag") or model_id
+            if self.ensure_daemon:
+                _ensure_ollama_daemon()
+                _ollama_pull(tag)
+            return OllamaModel(id=model_id, tag=tag)
 
         raise ValueError(f"Unsupported serving engine {engine!r} for {model_id!r}")
 
@@ -264,7 +228,7 @@ def _ensure_ollama_daemon(host: str = "http://localhost:11434", timeout_s: float
     except FileNotFoundError as exc:
         raise RuntimeError(
             "`ollama` not found. Install it (`brew install ollama`) or switch "
-            "prefer_engine='vllm'."
+            "prefer_engine='llamacpp'."
         ) from exc
 
     deadline = time.monotonic() + timeout_s

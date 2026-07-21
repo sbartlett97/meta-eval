@@ -10,26 +10,15 @@ hardware:
   total_memory_gb: 32
   accelerator: "metal"        # metal | cuda | cpu
   # Rough memory budget (see PRD "Total VRAM Usage"):
-  #   2x 7B GGUF (~8.3GB) + vLLM overhead (~2GB) ~= 10-11GB for judges,
+  #   2x 7B GGUF (~8.3GB) + runtime overhead (~2GB) ~= 10-11GB for judges,
   #   leaving ~20GB for test-model inference + analysis.
   reserved_for_judges_gb: 11
 
-# Default in-process vLLM engine parameters. Passed to `vllm.LLM(model=..., **x)`
-# (harness/vllm_engine.py) for every local checkpoint. SAM MUST VERIFY these
-# against the M5 (PRD review checklist).
-vllm_defaults:
-  tensor_parallel_size: 1        # single device
-  gpu_memory_utilization: 0.8    # fraction of unified memory per engine
-  max_model_len: 2048            # context window
-  dtype: "auto"                  # infer from checkpoint
-  enable_prefix_caching: true    # reuse shared prompt prefixes
-  # quantization: "gguf"         # uncomment if vLLM needs an explicit hint
-
 # Default in-process llama.cpp engine parameters. Passed to
 # `llama_cpp.Llama(model_path=..., **x)` (harness/llamacpp_engine.py) for every
-# GGUF checkpoint served with `engine: llamacpp` / `access: llamacpp`. This is
-# the recommended local backend: GGUF-native (points at a specific quant file)
-# and loads models sequentially. SAM MUST VERIFY these against the M5.
+# GGUF checkpoint served with `engine: llamacpp` / `access: llamacpp`. This is the
+# local serving backend: GGUF-native (points at a specific quant file) and loads
+# models sequentially. SAM MUST VERIFY these against the M5.
 llamacpp_defaults:
   n_ctx: 2048                    # context window
   n_gpu_layers: -1               # -1 => offload all layers to Metal

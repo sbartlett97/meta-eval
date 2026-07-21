@@ -11,26 +11,18 @@ from typing import Dict, List, Optional
 import yaml
 
 from harness import llamacpp_engine
-from harness.vllm_engine import engine_kwargs_from_profile
 from judges.base import Judge
 from judges.claude_judge import ClaudeJudge
 from judges.gpt4_judge import GPT4Judge
 from judges.heuristic_judge import HeuristicJudge
-from judges.llama_local_judge import LlamaLocalJudge
 from judges.local_llamacpp_judge import LocalLlamaCppJudge
-from judges.mistral_local_judge import MistralLocalJudge
 
 
-def build_judge(
-    entry: Dict,
-    engine_kwargs: Optional[Dict] = None,
-    llamacpp_kwargs: Optional[Dict] = None,
-) -> Judge:
+def build_judge(entry: Dict, llamacpp_kwargs: Optional[Dict] = None) -> Judge:
     """Instantiate a single judge from one ``judges.yaml`` entry.
 
-    ``engine_kwargs`` / ``llamacpp_kwargs`` (from the hardware profile) are passed
-    to the matching local backend so it loads its in-process engine with the right
-    memory / context settings.
+    ``llamacpp_kwargs`` (from the hardware profile) are passed to local llama.cpp
+    judges so they load their in-process engine with the right context settings.
     """
     provider = entry.get("provider")
     access = entry.get("access")
@@ -49,12 +41,6 @@ def build_judge(
             gguf_file=entry.get("gguf_file"),
             engine_kwargs=dict(llamacpp_kwargs or {}),
         )
-    if provider == "local" and access == "vllm":
-        model = entry.get("model", "")
-        kwargs = dict(engine_kwargs or {})
-        # Route by checkpoint / id to the right id + default-checkpoint subclass.
-        cls = LlamaLocalJudge if "llama" in jid.lower() or "llama" in model.lower() else MistralLocalJudge
-        return cls(model_id=model, judge_id=jid, engine_kwargs=kwargs)
 
     raise ValueError(f"Cannot build judge for entry: {entry!r}")
 
@@ -73,13 +59,12 @@ def build_judges(
             (used to run cheaper/faster subsets -- PRD "Decision 3").
         only_enabled: Skip judges with ``enabled: false``.
         hardware_profile: Parsed ``config/hardware_profile.yaml`` dict, or a path
-            to it. Supplies in-process vLLM engine kwargs for local judges.
+            to it. Supplies in-process llama.cpp engine kwargs for local judges.
     """
     cfg = config if isinstance(config, dict) else _load(config)
     profile = (
         hardware_profile if isinstance(hardware_profile, dict) else _maybe_load(hardware_profile)
     )
-    engine_kwargs = engine_kwargs_from_profile(profile)
     llamacpp_kwargs = llamacpp_engine.engine_kwargs_from_profile(profile)
     # Honour the sequential-loading cap for any local llama.cpp judges.
     llamacpp_engine.set_max_resident(llamacpp_engine.max_resident_from_profile(profile))
@@ -89,9 +74,7 @@ def build_judges(
             continue
         if max_priority is not None and entry.get("priority", 1) > max_priority:
             continue
-        judges.append(
-            build_judge(entry, engine_kwargs=engine_kwargs, llamacpp_kwargs=llamacpp_kwargs)
-        )
+        judges.append(build_judge(entry, llamacpp_kwargs=llamacpp_kwargs))
     return judges
 
 

@@ -1,15 +1,13 @@
 """Local judge backed by an **in-process** llama.cpp (GGUF) engine.
 
-The llama.cpp counterpart to :mod:`judges.local_vllm_judge`. It loads a specific
-GGUF quant in-process via :mod:`harness.llamacpp_engine` and runs inference
-in-line — no server, no port. Because the engine cache loads models sequentially
-(default: one resident at a time), a llama.cpp judge does not permanently hold
-its weights the way an in-process vLLM judge does; they are freed when another
-model needs to load.
+It loads a specific GGUF quant in-process via :mod:`harness.llamacpp_engine` and
+runs inference in-line — no server, no port. Because the engine cache loads
+models sequentially (default: one resident at a time), a local judge does not
+permanently hold its weights; they are freed when another model needs to load.
 
-Unlike the Mistral/Llama vLLM judges, there is no per-model subclass: a GGUF
-judge is fully described by its ``(repo_id, gguf_file)`` pair from
-``config/judges.yaml``, so one class serves every checkpoint.
+There is no per-model subclass: a GGUF judge is fully described by its
+``(repo_id, gguf_file)`` pair from ``config/judges.yaml``, so one class serves
+every checkpoint.
 """
 
 from __future__ import annotations

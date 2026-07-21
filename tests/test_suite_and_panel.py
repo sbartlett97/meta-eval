@@ -84,8 +84,8 @@ def test_factory_builds_from_config():
         "judges": [
             {"id": "heuristic-baseline", "provider": "deterministic", "access": "none",
              "priority": 3, "enabled": True},
-            {"id": "mistral-7b-local", "provider": "local", "access": "vllm",
-             "model": "unsloth/Mistral-7B-v0.3-GGUF",
+            {"id": "mistral-7b-local", "provider": "local", "access": "llamacpp",
+             "model": "unsloth/Mistral-7B-v0.3-GGUF", "gguf_file": "*Q4_K_M.gguf",
              "priority": 2, "enabled": True},
             {"id": "disabled", "provider": "deterministic", "access": "none",
              "priority": 3, "enabled": False},

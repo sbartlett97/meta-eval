@@ -1,7 +1,7 @@
 """Shared judge prompt template + response parsing (PRD v3.1).
 
 Keeping the prompt and the JSON parser in one place guarantees every judge
-(Claude, GPT-4, local vLLM models) is asked the same question and its output is
+(Claude, GPT-4, local llama.cpp models) is asked the same question and its output is
 parsed the same way -- a prerequisite for meaningful cross-judge meta-evaluation.
 """
 

@@ -122,7 +122,7 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         help="Judge subset preset.",
     )
     parser.add_argument(
-        "--prefer-engine", default="ollama", choices=["ollama", "llamacpp", "vllm"]
+        "--prefer-engine", default="llamacpp", choices=["llamacpp", "ollama"]
     )
     parser.add_argument(
         "--no-judge",
@@ -145,7 +145,7 @@ def _cli(argv: Optional[List[str]] = None) -> int:
                      "nothing to generate otherwise).")
 
     # Hydration: pull the open-weight checkpoints THIS run needs from HF up front
-    # so the first in-process vLLM load doesn't block mid-run on a multi-GB
+    # so the first in-process llama.cpp load doesn't block mid-run on a multi-GB
     # download. Scoped to the requested models + the judges actually selected, so
     # e.g. a remote-only `--judges cheap` re-judge downloads nothing.
     if not args.no_hydrate:

@@ -1,28 +1,27 @@
 """In-process llama.cpp engine (GGUF-native, sequential loading).
 
-This is the recommended local serving backend for the eval harness. It exists
-alongside :mod:`harness.vllm_engine` and answers three things vLLM does not do
-well for this workload:
+The local serving backend for the eval harness. Three properties matter for this
+workload:
 
 1. **Point at a specific GGUF file.** ``llama.cpp`` is GGUF-native: an engine is
    pinned to *one* quant file, selected by a filename glob
    (e.g. ``"*Q4_K_M.gguf"``). ``Llama.from_pretrained(repo_id, filename=glob)``
-   downloads and loads only that file from a HuggingFace repo, instead of vLLM's
-   "grab the whole checkpoint directory" behaviour.
-2. **Load models sequentially.** Unlike the vLLM engine cache (which keeps every
-   distinct checkpoint resident process-wide, forever), this cache holds at most
-   ``max_resident`` models in memory at a time. When loading a new model would
-   exceed the cap, the least-recently-used engine is unloaded first — its weights
-   are freed via ``Llama.close()``. With the default cap of ``1`` you get strict
-   sequential loading: only one model is ever resident, so a test model and two
-   judges never fight for memory simultaneously.
-3. **In-process, no server.** Same shape as the vLLM engine: construct an engine
-   cheaply (no import of ``llama_cpp``, no weights), and only touch memory on the
-   first :meth:`LlamaCppEngine.generate` call.
+   downloads and loads only that file from a HuggingFace repo, rather than
+   grabbing the whole checkpoint directory of quants.
+2. **Load models sequentially.** This cache holds at most ``max_resident`` models
+   in memory at a time. When loading a new model would exceed the cap, the
+   least-recently-used engine is unloaded first — its weights are freed via
+   ``Llama.close()``. With the default cap of ``1`` you get strict sequential
+   loading: only one model is ever resident, so a test model and two judges never
+   fight for memory simultaneously.
+3. **In-process, no server.** Construct an engine cheaply (no import of
+   ``llama_cpp``, no weights), and only touch memory on the first
+   :meth:`LlamaCppEngine.generate` call.
 
 An evicted engine keeps its identity in the cache; it simply reloads the next
-time it is used. So sharing works the same as the vLLM path: a test model and a
-judge that reference the same ``(repo_id, filename)`` reuse one engine object.
+time it is used. A test model and a judge that reference the same
+``(repo_id, filename)`` reuse one engine object (and one loaded copy of the
+weights while resident).
 """
 
 from __future__ import annotations

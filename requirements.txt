@@ -5,12 +5,12 @@
 # It contains only pure-Python wheels that install cleanly on every platform, so
 # `pip install -r requirements.txt` never fails on an unrelated heavy dependency.
 #
-# The heavy, platform-specific serving backend (vLLM) and the future
+# The heavy, platform-specific serving backend (llama.cpp) and the future
 # meta-evaluation analysis stack are intentionally kept OUT of the default
 # install and listed as clearly-marked optional extras below.
 #
 # Runtime quantization (BitsAndBytes) is intentionally NOT used: v3.1 serves
-# pre-quantized checkpoints via vLLM / Ollama.
+# pre-quantized GGUF checkpoints via llama.cpp / Ollama.
 
 # --- Core runtime (required) -------------------------------------------
 pyyaml>=6.0             # config loading (config/*.yaml)
@@ -29,13 +29,14 @@ pytest-cov>=4.1.0
 
 # --- Optional: local model serving -------------------------------------
 # Heavy and platform-specific, so kept out of the core install. Local models and
-# judges load their checkpoint IN-PROCESS (no server); install the backend you
-# use, separately:
-#   llama.cpp: pip install llama-cpp-python   (RECOMMENDED for local GGUF)
+# judges load their GGUF checkpoint IN-PROCESS (no server); install the backend
+# you use, separately:
+#   llama.cpp: pip install llama-cpp-python   (the local GGUF backend)
 #       GGUF-native and Metal-friendly. Loads a specific quant file from an HF
 #       repo (`engine: llamacpp` / `access: llamacpp`, harness/llamacpp_engine.py)
-#       and serves models sequentially. See its docs for a Metal/CUDA build.
-#   vLLM:      pip install "vllm>=0.3.0"      (`engine: vllm` / `access: vllm`)
+#       and serves models sequentially. llama-cpp-python builds its own bundled
+#       llama.cpp at install time (it does not reuse a system install); for a
+#       Metal build: CMAKE_ARGS="-DGGML_METAL=on" pip install llama-cpp-python
 #   Ollama:    brew install ollama            (or `pip install ollama`)
 
 # --- Optional: meta-evaluation / analysis stack ------------------------

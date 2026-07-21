@@ -3,14 +3,14 @@
 # Judge panel configuration (PRD v3.1).
 #
 # Every judge implements the same Judge.evaluate() contract. Remote judges call a
-# hosted API; local judges load their checkpoint IN-PROCESS via vLLM
-# (harness/vllm_engine.py); the heuristic baseline is deterministic and in-process.
+# hosted API; local judges load their GGUF checkpoint IN-PROCESS via llama.cpp
+# (harness/llamacpp_engine.py); the heuristic baseline is deterministic and
+# in-process.
 #
 # `access` values:
 #   api      -> hosted provider endpoint (Anthropic / OpenAI / Replicate)
-#   llamacpp -> local GGUF loaded IN-PROCESS via llama.cpp (recommended local
-#               backend; pins a specific quant via `gguf_file`, loads sequentially)
-#   vllm     -> local checkpoint loaded IN-PROCESS via vLLM (no server, no port)
+#   llamacpp -> local GGUF loaded IN-PROCESS via llama.cpp (pins a specific quant
+#               via `gguf_file`, loads sequentially; no server, no port)
 #   none     -> deterministic, no network call
 #
 # `priority` is used by the panel to select a subset when running cheap/fast
