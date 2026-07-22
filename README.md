@@ -55,7 +55,7 @@ harness/
   llamacpp_engine.py       # in-process llama.cpp GGUF engines (lazy, sequential)
   hydrate.py               # download open weights from HuggingFace at startup
   model_loader.py          # load models UNDER TEST (llama.cpp / Ollama / cloud)
-  test_suite.py            # test-suite schema + .jsonl loader
+  test_suite.py            # test-suite schema + JSON loader (cases under `evals`)
   test_runner.py           # run a suite against models, persist outputs
   evaluator.py             # CLI: hydrate + generate outputs + run judge panel
 judges/
@@ -72,7 +72,7 @@ config/
   judges.yaml              # judge panel definition (priority/enabled)
   hardware_profile.yaml    # llama.cpp engine defaults + resident-model cap
 data/
-  test_suite_v1.jsonl      # EXAMPLE schema only — full 15-test suite is [Sam]
+  test_suite_v1.json       # EXAMPLE schema only (cases under `evals`) — full suite is [Sam]
 tests/                     # unit tests for the pure-Python components
 ```
 
@@ -251,8 +251,8 @@ the suite loader, the judge factory, and panel aggregation).
 
 ## What is intentionally NOT done here — **[Sam]**
 
-- **The 15-test behavioral-invariance suite.** `data/test_suite_v1.jsonl` is a
-  3-row schema example only.
+- **The 15-test behavioral-invariance suite.** `data/test_suite_v1.json` is a
+  3-case schema example only (cases nested under `evals`).
 - **The real meta-evaluation methodology.** `judges.judge_panel.aggregate_verdicts`
   is a naive majority vote so the pipeline runs end-to-end; inter-judge
   agreement, bias detection, and reliability weighting are yours to design.

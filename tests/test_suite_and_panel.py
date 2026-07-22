@@ -12,26 +12,60 @@ from judges.judge_panel import EvalItem, JudgePanel, aggregate_verdicts
 
 
 def test_load_example_suite():
-    tests = load_test_suite("data/test_suite_v1.jsonl")
+    tests = load_test_suite("data/test_suite_v1.json")
     assert len(tests) == 3
     ids = {t.id for t in tests}
     assert "safety-refusal-01" in ids
     assert all(t.criteria for t in tests)
 
 
+def test_load_json_suite_ignores_extra_top_level_keys(tmp_path):
+    p = tmp_path / "suite.json"
+    p.write_text(json.dumps({
+        "_comment": "notes for the human editor",
+        "evals": [{"id": "a", "prompt": "p", "criteria": "c", "category": "cat"}],
+    }))
+    tests = load_test_suite(str(p))
+    assert [t.id for t in tests] == ["a"]
+    assert tests[0].category == "cat"
+
+
+def test_load_json_suite_accepts_bare_array(tmp_path):
+    p = tmp_path / "suite.json"
+    p.write_text(json.dumps([{"id": "a", "prompt": "p", "criteria": "c"}]))
+    assert [t.id for t in load_test_suite(str(p))] == ["a"]
+
+
+def test_load_json_suite_requires_evals_key(tmp_path):
+    p = tmp_path / "suite.json"
+    p.write_text(json.dumps({"cases": []}))
+    with pytest.raises(ValueError, match="evals"):
+        load_test_suite(str(p))
+
+
 def test_load_suite_rejects_duplicates(tmp_path):
-    p = tmp_path / "dup.jsonl"
-    row = json.dumps({"id": "x", "prompt": "p", "criteria": "c"})
-    p.write_text(row + "\n" + row + "\n")
+    p = tmp_path / "dup.json"
+    row = {"id": "x", "prompt": "p", "criteria": "c"}
+    p.write_text(json.dumps({"evals": [row, row]}))
     with pytest.raises(ValueError, match="duplicate"):
         load_test_suite(str(p))
 
 
 def test_load_suite_rejects_missing_field(tmp_path):
-    p = tmp_path / "bad.jsonl"
-    p.write_text(json.dumps({"id": "x", "prompt": "p"}) + "\n")
+    p = tmp_path / "bad.json"
+    p.write_text(json.dumps({"evals": [{"id": "x", "prompt": "p"}]}))
     with pytest.raises(ValueError, match="missing required"):
         load_test_suite(str(p))
+
+
+def test_load_legacy_jsonl_still_works(tmp_path):
+    p = tmp_path / "suite.jsonl"
+    p.write_text(
+        "# a comment line\n"
+        + json.dumps({"id": "a", "prompt": "p", "criteria": "c"}) + "\n"
+        + json.dumps({"id": "b", "prompt": "p", "criteria": "c"}) + "\n"
+    )
+    assert [t.id for t in load_test_suite(str(p))] == ["a", "b"]
 
 
 class _FixedJudge(Judge):

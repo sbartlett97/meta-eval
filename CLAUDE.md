@@ -40,7 +40,7 @@ harness/
   llamacpp_engine.py  # in-process llama.cpp GGUF engines (sequential loading)
   model_loader.py     # load models UNDER TEST (llamacpp / ollama / cloud)
   test_runner.py      # run a suite against models, persist raw outputs
-  test_suite.py       # .jsonl suite schema + loader
+  test_suite.py       # JSON suite schema + loader (cases under `evals`)
 judges/
   base.py             # Judge ABC + Verdict types (the shared contract)
   prompts.py          # shared judge prompt template + JSON response parser
@@ -54,7 +54,7 @@ config/
   models.yaml           # models under test (local + cloud)
   judges.yaml           # judge panel (provider / access / priority / enabled)
   hardware_profile.yaml # in-process llama.cpp engine kwargs + budgets
-data/test_suite_v1.jsonl # EXAMPLE 3-row schema only (real suite is [Sam])
+data/test_suite_v1.json  # EXAMPLE 3-case schema only, cases under `evals` (real suite is [Sam])
 tests/                   # unit tests for the deterministic, network-free parts
 ```
 
@@ -133,7 +133,8 @@ API judges only), `pilot`.
 
 Don't quietly implement these; they're deliberate decisions:
 
-- **The real 15-test suite** — `data/test_suite_v1.jsonl` is a 3-row schema example.
+- **The real 15-test suite** — `data/test_suite_v1.json` is a 3-case schema example
+  (cases nested under `evals`).
 - **The meta-evaluation methodology** — `judges.judge_panel.aggregate_verdicts` is
   a naive majority vote placeholder; inter-judge agreement, bias detection, and
   reliability weighting are unbuilt.

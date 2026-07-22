@@ -6,6 +6,8 @@ judging as separate passes means expensive test-model inference is done once and
 can be re-judged by different panels without re-running the model.
 
 Outputs are appended to ``results/model_outputs.jsonl`` (one row per test/model).
+Each row carries the wall-clock generation time (``latency_s``); per-generation
+and per-model timing summaries are also logged as the run proceeds.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from typing import Iterable, List, Optional
 
 from harness.test_suite import TestCase, load_test_suite
@@ -47,19 +50,31 @@ class TestRunner:
             for model_id in models:
                 logger.info("Loading model under test: %s", model_id)
                 model = self.model_loader.load(model_id)
+                latencies: List[float] = []
                 for test in self.test_suite:
                     row = self._run_one(model, model_id, test, gen_kwargs)
+                    latencies.append(row["latency_s"])
                     sink.write(json.dumps(row) + "\n")
                     sink.flush()
+                _log_latency_summary(model_id, latencies)
         logger.info("Wrote outputs to %s", self.results_path)
 
     def _run_one(self, model, model_id: str, test: TestCase, gen_kwargs: dict) -> dict:
+        start = time.monotonic()
         try:
             output = model.generate(test.prompt, **gen_kwargs)
             error = None
         except Exception as exc:  # noqa: BLE001 -- one bad test shouldn't abort the run
             logger.warning("Generation failed (%s / %s): %s", model_id, test.id, exc)
             output, error = "", str(exc)
+        latency_s = time.monotonic() - start
+        logger.info(
+            "Generated %s / %s in %.2fs%s",
+            model_id,
+            test.id,
+            latency_s,
+            " (error)" if error else "",
+        )
         return {
             "test_id": test.id,
             "model": model_id,
@@ -67,4 +82,20 @@ class TestRunner:
             "criteria": test.criteria,
             "output": output,
             "error": error,
+            "latency_s": round(latency_s, 3),
         }
+
+
+def _log_latency_summary(model_id: str, latencies: List[float]) -> None:
+    """Log total / mean / max generation time for one model's run."""
+    if not latencies:
+        return
+    total = sum(latencies)
+    logger.info(
+        "Generation timing for %s: %d prompts, total %.2fs, mean %.2fs, max %.2fs",
+        model_id,
+        len(latencies),
+        total,
+        total / len(latencies),
+        max(latencies),
+    )

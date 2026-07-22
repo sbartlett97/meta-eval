@@ -109,7 +109,7 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         default=None,
         help="Model ids to generate outputs for first (from config/models.yaml).",
     )
-    parser.add_argument("--test-suite", default="data/test_suite_v1.jsonl")
+    parser.add_argument("--test-suite", default="data/test_suite_v1.json")
     parser.add_argument("--models-config", default="config/models.yaml")
     parser.add_argument("--judges-config", default="config/judges.yaml")
     parser.add_argument("--hardware-config", default="config/hardware_profile.yaml")
