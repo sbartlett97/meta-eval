@@ -40,8 +40,6 @@ from typing import Dict, Iterable, List, Optional
 
 import yaml
 
-from harness import llamacpp_engine
-
 logger = logging.getLogger(__name__)
 
 # Providers whose weights are NOT downloaded from HF (hosted / cloud-served).
@@ -183,6 +181,12 @@ def hydrate_weights(
                 "  [dry-run] would download %s (%s)", _spec_target(spec), spec.source
             )
         return [s.repo_id for s in specs]
+
+    # Imported lazily (not at module top) so `python harness/hydrate.py` works:
+    # running the file directly only puts harness/ on sys.path, and the CLI adds
+    # the project root before calling this — a top-level `from harness import ...`
+    # would fail at import time, before that fix runs.
+    from harness import llamacpp_engine
 
     # ``from_pretrained`` authenticates via huggingface_hub's env token; make an
     # explicit token visible to it for gated repos.
