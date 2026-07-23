@@ -38,12 +38,18 @@ def _write_suite(tmp_path):
     return str(p)
 
 
+def _read_outputs(path):
+    data = json.loads(path.read_text())
+    assert set(data) == {"outputs"}  # single object, rows under `outputs`
+    return data["outputs"]
+
+
 def test_runner_records_generation_latency(tmp_path):
-    out = tmp_path / "outputs.jsonl"
+    out = tmp_path / "outputs.json"
     runner = Runner(_write_suite(tmp_path), _FakeLoader(_FakeModel()), results_path=str(out))
     runner.run_tests(["m"])
 
-    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    rows = _read_outputs(out)
     assert [r["test_id"] for r in rows] == ["t1", "t2"]
     for r in rows:
         assert isinstance(r["latency_s"], (int, float))
@@ -52,11 +58,11 @@ def test_runner_records_generation_latency(tmp_path):
 
 
 def test_runner_times_failed_generations_too(tmp_path):
-    out = tmp_path / "outputs.jsonl"
+    out = tmp_path / "outputs.json"
     runner = Runner(_write_suite(tmp_path), _FakeLoader(_BoomModel()), results_path=str(out))
     runner.run_tests(["boom"])
 
-    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    rows = _read_outputs(out)
     # A failed generation still records output="" + the error + a latency.
     assert all(r["output"] == "" for r in rows)
     assert all("kaboom" in r["error"] for r in rows)

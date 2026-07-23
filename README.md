@@ -35,10 +35,11 @@ Test Runner ──> model outputs ──> Judge Panel ──> verdicts + consens
                                     └─ Heuristic (deterministic, in-process)
 ```
 
-Generation and judging are **two separate passes** writing to two separate
-files (`results/model_outputs.jsonl` then `results/model_verdicts.jsonl`), so
-expensive test-model inference is done once and can be re-judged — or skipped
-entirely (see [Generate outputs only](#generate-outputs-only-no-judges)).
+Generation and judging are **two separate passes** writing to two separate JSON
+files (`results/model_outputs.json` then `results/model_verdicts.json` — rows
+nested under `outputs` / `verdicts`), so expensive test-model inference is done
+once and can be re-judged — or skipped entirely (see
+[Generate outputs only](#generate-outputs-only-no-judges)).
 
 Every judge — remote or local — implements the same
 `Judge.evaluate(test_id, model_output, criteria) -> Verdict` contract, so the
@@ -134,7 +135,7 @@ actually selected — see [Weight hydration](#weight-hydration)). Pass
 ### Judge previously-generated outputs
 
 ```bash
-python harness/evaluator.py --outputs results/model_outputs.jsonl --judges cheap
+python harness/evaluator.py --outputs results/model_outputs.json --judges cheap
 ```
 
 ### Generate outputs only (no judges)
@@ -147,12 +148,14 @@ python harness/evaluator.py --models mistral-7b-4bit --no-judge
 ```
 
 This runs the suite against the model and writes only
-`results/model_outputs.jsonl` (one row per test/model — prompt, category,
-criteria, raw model output). No judge is built, so **no API keys are required**.
+`results/model_outputs.json` — a `{"outputs": [...]}` object, one row per
+test/model (prompt, category, criteria, raw model output, and `latency_s`
+generation time). No judge is built, so **no API keys are required**.
 `--no-judge` requires `--models` (there is nothing to generate otherwise).
 
-Results of a full run are written to `results/model_verdicts.jsonl` (one row per
-test/model with each judge's verdict plus a placeholder consensus).
+Results of a full run are written to `results/model_verdicts.json` — a
+`{"verdicts": [...]}` object, one row per test/model with each judge's verdict
+plus a placeholder consensus.
 
 ## Weight hydration
 

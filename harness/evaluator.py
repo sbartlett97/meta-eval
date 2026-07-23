@@ -8,11 +8,11 @@ Ties the pieces together:
     2. Build the judge panel from ``config/judges.yaml``.
     3. Run every judge over every model output.
     4. Persist per-judge verdicts + a naive consensus to
-       ``results/model_verdicts.jsonl``.
+       ``results/model_verdicts.json`` (rows under ``verdicts``).
 
 Usage (from the PRD setup section):
     python harness/evaluator.py --models mistral-7b-4bit --judges all
-    python harness/evaluator.py --outputs results/model_outputs.jsonl --judges cheap
+    python harness/evaluator.py --outputs results/model_outputs.json --judges cheap
     python harness/evaluator.py --models mistral-7b-4bit --no-judge   # generate only
 
 Note: consensus here is a placeholder majority vote. The real meta-evaluation
@@ -57,7 +57,7 @@ _JUDGE_PRESETS = {
 def run_evaluation(
     outputs_path: str,
     judges_config: str = "config/judges.yaml",
-    verdicts_path: str = "results/model_verdicts.jsonl",
+    verdicts_path: str = "results/model_verdicts.json",
     max_priority: Optional[int] = None,
     hardware_profile: str = "config/hardware_profile.yaml",
 ) -> str:
@@ -73,9 +73,7 @@ def run_evaluation(
     # Read all outputs, then judge the batch judge-outer (each judge processes
     # every row before the next judge runs). This keeps a sequentially-loaded
     # local judge resident for all its calls instead of reloading per row.
-    with open(outputs_path, "r", encoding="utf-8") as src:
-        rows = [json.loads(line) for line in src if line.strip()]
-
+    rows = _load_output_rows(outputs_path)
     items = [
         EvalItem(
             test_id=row["test_id"],
@@ -86,19 +84,38 @@ def run_evaluation(
     ]
     results = panel.evaluate_batch(items)
 
+    records = [
+        {
+            "test_id": row["test_id"],
+            "model": row.get("model"),
+            "verdicts": [v.to_dict() for v in result.verdicts],
+            "consensus": aggregate_verdicts(result),
+        }
+        for row, result in zip(rows, results)
+    ]
     with open(verdicts_path, "w", encoding="utf-8") as sink:
-        for row, result in zip(rows, results):
-            record = {
-                "test_id": row["test_id"],
-                "model": row.get("model"),
-                "verdicts": [v.to_dict() for v in result.verdicts],
-                "consensus": aggregate_verdicts(result),
-            }
-            sink.write(json.dumps(record) + "\n")
+        json.dump({"verdicts": records}, sink, indent=2)
+        sink.write("\n")
 
-    logger.info("Wrote %d verdict rows to %s", len(rows), verdicts_path)
+    logger.info("Wrote %d verdict row(s) to %s", len(records), verdicts_path)
     logger.info("Cost/latency summary: %s", panel.cost_summary())
     return verdicts_path
+
+
+def _load_output_rows(outputs_path: str) -> List[Dict]:
+    """Load model-output rows from a ``{"outputs": [...]}`` JSON file.
+
+    A bare top-level array is accepted too, and legacy ``.jsonl`` outputs (one
+    object per line) still load, dispatched on the file extension.
+    """
+    if outputs_path.endswith(".jsonl"):
+        with open(outputs_path, "r", encoding="utf-8") as src:
+            return [json.loads(line) for line in src if line.strip()]
+    with open(outputs_path, "r", encoding="utf-8") as src:
+        data = json.load(src)
+    if isinstance(data, dict):
+        return data.get("outputs", [])
+    return data
 
 
 def _cli(argv: Optional[List[str]] = None) -> int:
@@ -115,10 +132,10 @@ def _cli(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--hardware-config", default="config/hardware_profile.yaml")
     parser.add_argument(
         "--outputs",
-        default="results/model_outputs.jsonl",
+        default="results/model_outputs.json",
         help="Model outputs to judge (generated first if --models is given).",
     )
-    parser.add_argument("--verdicts", default="results/model_verdicts.jsonl")
+    parser.add_argument("--verdicts", default="results/model_verdicts.json")
     parser.add_argument(
         "--judges",
         default="all",
@@ -168,8 +185,7 @@ def _cli(argv: Optional[List[str]] = None) -> int:
             hardware_profile=args.hardware_config,
         )
         runner = TestRunner(args.test_suite, loader, results_path=args.outputs)
-        # Fresh generation run: start the outputs file clean.
-        open(args.outputs, "w").close()
+        # run_tests overwrites the outputs file with a fresh {"outputs": [...]}.
         runner.run_tests(args.models)
 
     if args.no_judge:

@@ -5,9 +5,10 @@ model output. Judging happens downstream (JudgePanel) -- keeping generation and
 judging as separate passes means expensive test-model inference is done once and
 can be re-judged by different panels without re-running the model.
 
-Outputs are appended to ``results/model_outputs.jsonl`` (one row per test/model).
-Each row carries the wall-clock generation time (``latency_s``); per-generation
-and per-model timing summaries are also logged as the run proceeds.
+Outputs are written to ``results/model_outputs.json`` as a single object with the
+rows (one per test/model) nested under ``outputs``. Each row carries the
+wall-clock generation time (``latency_s``); per-generation and per-model timing
+summaries are also logged as the run proceeds.
 """
 
 from __future__ import annotations
@@ -28,36 +29,43 @@ class TestRunner:
         self,
         test_suite_path: str,
         model_loader,
-        results_path: str = "results/model_outputs.jsonl",
+        results_path: str = "results/model_outputs.json",
     ) -> None:
         """
         Args:
-            test_suite_path: Path to a ``.jsonl`` suite (see test_suite.py).
+            test_suite_path: Path to a suite file (see test_suite.py).
             model_loader: A ``ModelLoader``-like object exposing ``load(id)`` ->
                 object with ``generate(prompt) -> str``.
-            results_path: Where to append output rows.
+            results_path: Where to write the outputs JSON (``{"outputs": [...]}``).
         """
         self.test_suite: List[TestCase] = load_test_suite(test_suite_path)
         self.model_loader = model_loader
         self.results_path = results_path
 
     def run_tests(self, models: Iterable[str], gen_kwargs: Optional[dict] = None) -> None:
-        """Generate outputs for every (model, test) pair and persist them."""
+        """Generate outputs for every (model, test) pair and persist them.
+
+        Writes ``results_path`` once, overwriting any previous run: a single JSON
+        object ``{"outputs": [...]}`` with one row per (test, model).
+        """
         gen_kwargs = gen_kwargs or {}
         os.makedirs(os.path.dirname(self.results_path) or ".", exist_ok=True)
 
-        with open(self.results_path, "a", encoding="utf-8") as sink:
-            for model_id in models:
-                logger.info("Loading model under test: %s", model_id)
-                model = self.model_loader.load(model_id)
-                latencies: List[float] = []
-                for test in self.test_suite:
-                    row = self._run_one(model, model_id, test, gen_kwargs)
-                    latencies.append(row["latency_s"])
-                    sink.write(json.dumps(row) + "\n")
-                    sink.flush()
-                _log_latency_summary(model_id, latencies)
-        logger.info("Wrote outputs to %s", self.results_path)
+        rows: List[dict] = []
+        for model_id in models:
+            logger.info("Loading model under test: %s", model_id)
+            model = self.model_loader.load(model_id)
+            latencies: List[float] = []
+            for test in self.test_suite:
+                row = self._run_one(model, model_id, test, gen_kwargs)
+                latencies.append(row["latency_s"])
+                rows.append(row)
+            _log_latency_summary(model_id, latencies)
+
+        with open(self.results_path, "w", encoding="utf-8") as sink:
+            json.dump({"outputs": rows}, sink, indent=2)
+            sink.write("\n")
+        logger.info("Wrote %d output row(s) to %s", len(rows), self.results_path)
 
     def _run_one(self, model, model_id: str, test: TestCase, gen_kwargs: dict) -> dict:
         start = time.monotonic()

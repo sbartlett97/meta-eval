@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Generated run artifacts (keep the tracked .gitkeep)
+results/*.json
+results/*.jsonl
+!results/.gitkeep

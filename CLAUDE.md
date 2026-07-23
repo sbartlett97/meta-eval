@@ -21,8 +21,8 @@ re-judged:
 
 ```
 hydrate (download the open weights this run needs from HF)
-  → generate: models under test → results/model_outputs.jsonl
-  → judge:    judge panel over outputs → results/model_verdicts.jsonl
+  → generate: models under test → results/model_outputs.json   (rows under `outputs`)
+  → judge:    judge panel over outputs → results/model_verdicts.json (rows under `verdicts`)
 ```
 
 Hydration is scoped to the run: only the requested `--models` and the local
@@ -101,7 +101,7 @@ pytest                                    # run the (network-free) unit tests
 
 # Full run: hydrate → generate → judge
 python harness/evaluator.py --models mistral-7b-4bit --judges all
-python harness/evaluator.py --outputs results/model_outputs.jsonl --judges cheap  # re-judge
+python harness/evaluator.py --outputs results/model_outputs.json --judges cheap   # re-judge
 python harness/evaluator.py --models mistral-7b-4bit --no-judge                    # generate only
 python harness/evaluator.py --models mistral-7b-4bit --judges cheap --no-hydrate   # skip HF download
 
@@ -149,4 +149,4 @@ Don't quietly implement these; they're deliberate decisions:
 - Work on the branch specified by the task; commit with clear messages; push with
   `git push -u origin <branch>`. Do not open a PR unless explicitly asked.
 - `results/` holds run artifacts (only `.gitkeep` is tracked); don't commit
-  generated `*.jsonl` outputs.
+  generated `model_outputs.json` / `model_verdicts.json`.
