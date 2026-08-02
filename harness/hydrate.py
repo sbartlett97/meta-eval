@@ -113,13 +113,15 @@ def collect_weights(
     if include_judges:
         judges = _as_dict(judges_config)
         for entry in judges.get("judges", []) or []:
-            if entry.get("access") != "llamacpp":
+            if not _is_local_llamacpp(entry):
                 continue  # only local (llama.cpp) judges have weights to download
             if only_enabled_judges and not entry.get("enabled", True):
                 continue
             if judge_max_priority is not None and entry.get("priority", 1) > judge_max_priority:
                 continue
-            repo = entry.get("model")
+            # Judges accept the same entry shape as models under test, so the
+            # repo may be under `model` (flat shape) or `checkpoint` (model-style).
+            repo = entry.get("model") or entry.get("checkpoint")
             if not repo:
                 continue
             filename, additional = _gguf_target(entry)
@@ -225,6 +227,17 @@ def _add(specs: "Dict[str, WeightSpec]", spec: WeightSpec) -> None:
         "|".join(spec.additional_files or ()),
     ])
     specs.setdefault(key, spec)
+
+
+def _is_local_llamacpp(entry: Dict) -> bool:
+    """True for a local llama.cpp judge entry, in either accepted shape.
+
+    Mirrors ``judges.factory.local_llamacpp_spec``: the flat judge shape
+    (``access: llamacpp``) or the model-style shape (``serving.engine:
+    llamacpp``) — kept local so this module stays importable standalone.
+    """
+    serving = entry.get("serving", {}) or {}
+    return entry.get("access") == "llamacpp" or serving.get("engine") == "llamacpp"
 
 
 def _gguf_target(entry: Dict):

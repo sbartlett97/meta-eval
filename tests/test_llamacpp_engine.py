@@ -272,6 +272,35 @@ def test_factory_builds_llamacpp_judge():
     assert judge.engine_kwargs == {"n_ctx": 2048}
 
 
+def test_factory_accepts_model_style_judge_entry():
+    # A judge defined exactly like a model under test (checkpoint + serving)
+    # must build the same LocalLlamaCppJudge.
+    entry = {
+        "id": "gemma-4-12b",
+        "checkpoint": "unsloth/gemma-4-12b-it-GGUF",
+        "quantization": "4-bit",
+        "size_gb": 7.12,
+        "context_tokens": 32768,
+        "serving": {
+            "engine": "llamacpp",
+            "gguf_file": "*Q4_K_M.gguf",
+            "additional_files": ["mmproj-F16.gguf"],
+        },
+    }
+    judge = build_judge(entry, llamacpp_kwargs={"n_ctx": 2048})
+    assert isinstance(judge, LocalLlamaCppJudge)
+    assert judge.id == "gemma-4-12b"
+    assert judge.model_id == "unsloth/gemma-4-12b-it-GGUF"
+    assert judge.gguf_file == "*Q4_K_M.gguf"
+    assert judge.additional_files == ["mmproj-F16.gguf"]
+    assert judge.engine_kwargs == {"n_ctx": 2048}
+
+
+def test_factory_unknown_entry_error_mentions_both_shapes():
+    with pytest.raises(ValueError, match="serving.engine"):
+        build_judge({"id": "mystery", "provider": "wat"})
+
+
 # ---------------------------------------------------------------------- #
 # download_pretrained: hydration goes through llama-cpp-python
 # ---------------------------------------------------------------------- #
@@ -330,6 +359,22 @@ def test_collect_weights_includes_llamacpp_judges_and_targets_gguf():
     # gguf_file becomes the from_pretrained filename (here a glob).
     assert specs["org/mistral"].filename == "*Q4_K_M.gguf"
     assert specs["org/llama"].filename == "*Q4_K_M.gguf"
+
+
+def test_collect_weights_accepts_model_style_judge_entry():
+    # Judges defined with the models.yaml shape hydrate too.
+    judges = {
+        "judges": [
+            {
+                "id": "gemma-4-12b",
+                "checkpoint": "unsloth/gemma-4-12b-it-GGUF",
+                "serving": {"engine": "llamacpp", "gguf_file": "*Q4_K_M.gguf"},
+            },
+        ]
+    }
+    (spec,) = hydrate.collect_weights({}, judges)
+    assert spec.repo_id == "unsloth/gemma-4-12b-it-GGUF"
+    assert spec.filename == "*Q4_K_M.gguf"
 
 
 def test_exact_gguf_file_and_additional_files_are_captured():

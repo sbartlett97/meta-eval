@@ -39,6 +39,15 @@ judges:
   # `gguf_file` -> Llama.from_pretrained(filename=...): prefer the exact file
   # name (e.g. "Mistral-7B-v0.3.Q4_K_M.gguf"); a glob is also accepted. It also
   # scopes hydration to that file. `additional_files` fetches extra shards.
+  #
+  # Local judges accept the SAME entry shape as models under test, so an entry
+  # can be copied verbatim from models.yaml:
+  #   - id: "gemma-4-12b"
+  #     checkpoint: "unsloth/gemma-4-12b-it-GGUF"
+  #     serving:
+  #       engine: "llamacpp"
+  #       gguf_file: "*Q4_K_M.gguf"
+  # The flat judge shape below (access: llamacpp + model + gguf_file) works too.
   - id: "mistral-7b-local"
     provider: "local"
     model: "unsloth/Mistral-7B-v0.3-GGUF"

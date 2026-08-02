@@ -21,11 +21,16 @@ from judges.local_llamacpp_judge import LocalLlamaCppJudge
 def build_judge(entry: Dict, llamacpp_kwargs: Optional[Dict] = None) -> Judge:
     """Instantiate a single judge from one ``judges.yaml`` entry.
 
+    Local llama.cpp judges accept **the same entry shape as models under test**
+    (``checkpoint`` + ``serving.engine: llamacpp`` + ``serving.gguf_file``) as
+    well as the flat judge shape (``access: llamacpp`` + ``model`` +
+    ``gguf_file``), so an entry can be copied verbatim between models.yaml and
+    judges.yaml.
+
     ``llamacpp_kwargs`` (from the hardware profile) are passed to local llama.cpp
     judges so they load their in-process engine with the right context settings.
     """
     provider = entry.get("provider")
-    access = entry.get("access")
     jid = entry["id"]
 
     if provider == "anthropic":
@@ -34,16 +39,44 @@ def build_judge(entry: Dict, llamacpp_kwargs: Optional[Dict] = None) -> Judge:
         return GPT4Judge(model=entry.get("model", "gpt-4o"), judge_id=jid)
     if provider == "deterministic":
         return HeuristicJudge()
-    if provider == "local" and access == "llamacpp":
+
+    spec = local_llamacpp_spec(entry)
+    if spec is not None:
+        repo, gguf_file, additional_files = spec
         return LocalLlamaCppJudge(
-            model_id=entry.get("model", ""),
+            model_id=repo,
             judge_id=jid,
-            gguf_file=entry.get("gguf_file"),
-            additional_files=entry.get("additional_files"),
+            gguf_file=gguf_file,
+            additional_files=additional_files,
             engine_kwargs=dict(llamacpp_kwargs or {}),
         )
 
-    raise ValueError(f"Cannot build judge for entry: {entry!r}")
+    raise ValueError(
+        f"Cannot build judge for entry: {entry!r}. Expected provider "
+        "anthropic/openai/deterministic, or a local llama.cpp judge — either "
+        "the model-style shape (checkpoint + serving.engine: llamacpp + "
+        "serving.gguf_file) or the flat shape (access: llamacpp + model + "
+        "gguf_file)."
+    )
+
+
+def local_llamacpp_spec(entry: Dict) -> Optional[tuple]:
+    """Normalize a local llama.cpp entry to ``(repo, gguf_file, additional_files)``.
+
+    Accepts both config shapes — the flat judge shape (``access: llamacpp``,
+    ``model``, ``gguf_file``) and the model-style shape (``serving.engine:
+    llamacpp``, ``checkpoint``, ``serving.gguf_file``). Returns ``None`` if the
+    entry is not a local llama.cpp entry (e.g. an API judge).
+    """
+    serving = entry.get("serving", {}) or {}
+    if entry.get("access") != "llamacpp" and serving.get("engine") != "llamacpp":
+        return None
+    repo = entry.get("model") or entry.get("checkpoint")
+    if not repo:
+        return None
+    gguf_file = entry.get("gguf_file") or serving.get("gguf_file")
+    additional_files = entry.get("additional_files") or serving.get("additional_files")
+    return repo, gguf_file, additional_files
 
 
 def build_judges(
