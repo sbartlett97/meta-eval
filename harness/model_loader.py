@@ -59,18 +59,20 @@ class OllamaModel:
     timeout_s: int = _DEFAULT_TIMEOUT_S
 
     def generate(self, prompt: str, **kwargs) -> str:
-        resp = requests.post(
-            f"{self.host}/api/generate",
-            json={
-                "model": self.tag,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "num_predict": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
-                    "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
-                },
+        payload = {
+            "model": self.tag,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "num_predict": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+                "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
             },
-            timeout=self.timeout_s,
+        }
+        # Rendered into the model's template as its system message by Ollama.
+        if kwargs.get("system_prompt"):
+            payload["system"] = kwargs["system_prompt"]
+        resp = requests.post(
+            f"{self.host}/api/generate", json=payload, timeout=self.timeout_s
         )
         resp.raise_for_status()
         return resp.json().get("response", "")
@@ -108,12 +110,17 @@ class LlamaCppModel:
             additional_files=self.additional_files,
             engine_kwargs=self.engine_kwargs,
         )
-        call = engine.generate if self.mode == "completion" else engine.chat
-        return call(
-            prompt,
-            max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
-            temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
-        )
+        system_prompt = kwargs.get("system_prompt")
+        gen_kwargs = {
+            "max_tokens": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+            "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
+        }
+        if self.mode == "completion":
+            # No chat template to render a system role into: prepend it as text.
+            if system_prompt:
+                prompt = f"{system_prompt}\n\n{prompt}"
+            return engine.generate(prompt, **gen_kwargs)
+        return engine.chat(prompt, system_prompt=system_prompt, **gen_kwargs)
 
 
 @dataclass

@@ -340,25 +340,35 @@ class LlamaCppEngine:
         )
         return result["choices"][0]["text"]
 
-    def chat(self, prompt: str, json_only: bool = False, **kwargs) -> str:
+    def chat(
+        self,
+        prompt: str,
+        json_only: bool = False,
+        system_prompt: Optional[str] = None,
+        **kwargs,
+    ) -> str:
         """Send ``prompt`` as a single user turn through the model's chat template.
 
         ``create_chat_completion`` applies the chat template embedded in the GGUF
         (Gemma/Mistral/Llama turn markers etc.), so instruction-tuned models
-        actually answer instead of continuing the text. With ``json_only=True``
-        decoding is grammar-constrained to a valid JSON object via llama.cpp's
-        ``response_format`` — the model *cannot* emit non-JSON prose.
+        actually answer instead of continuing the text. ``system_prompt`` (when
+        set) is rendered as the template's system message ahead of the user turn.
+        With ``json_only=True`` decoding is grammar-constrained to a valid JSON
+        object via llama.cpp's ``response_format`` — the model *cannot* emit
+        non-JSON prose.
         """
         self._ensure_loaded()
         with _CACHE_LOCK:
             _ENGINE_CACHE.move_to_end(self.key)  # touch: most-recently used
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
         call_kwargs = {
             "max_tokens": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
             "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
         }
         if json_only:
             call_kwargs["response_format"] = {"type": "json_object"}
-        result = self._llm.create_chat_completion(
-            messages=[{"role": "user", "content": prompt}], **call_kwargs
-        )
+        result = self._llm.create_chat_completion(messages=messages, **call_kwargs)
         return result["choices"][0]["message"]["content"]

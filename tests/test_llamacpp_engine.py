@@ -162,6 +162,23 @@ def test_chat_without_json_only_has_no_response_format(fake_llama_cpp):
     assert call["response_format"] is None
 
 
+def test_chat_renders_system_prompt_as_system_message(fake_llama_cpp):
+    engine = llamacpp_engine.get_engine(repo_id="org/repo", filename="m.gguf")
+    engine.chat("hello", system_prompt="You are terse.")
+    (call,) = _FakeLlama.instances[0].chat_calls
+    assert call["messages"] == [
+        {"role": "system", "content": "You are terse."},
+        {"role": "user", "content": "hello"},
+    ]
+
+
+def test_chat_without_system_prompt_has_single_user_turn(fake_llama_cpp):
+    engine = llamacpp_engine.get_engine(repo_id="org/repo", filename="m.gguf")
+    engine.chat("hello", system_prompt=None)
+    (call,) = _FakeLlama.instances[0].chat_calls
+    assert call["messages"] == [{"role": "user", "content": "hello"}]
+
+
 def test_get_engine_caches_by_ref(fake_llama_cpp):
     a = llamacpp_engine.get_engine(repo_id="org/x", filename="*Q4.gguf")
     b = llamacpp_engine.get_engine(repo_id="org/x", filename="*Q4.gguf")
@@ -289,6 +306,24 @@ def test_model_chat_mode_never_json_constrains(fake_llama_cpp):
     model.generate("hello")
     (call,) = _FakeLlama.instances[0].chat_calls
     assert call["response_format"] is None
+
+
+def test_model_chat_mode_forwards_system_prompt(fake_llama_cpp):
+    model = LlamaCppModel(id="m", repo_id="it/repo", filename="m.gguf")
+    model.generate("hello", system_prompt="Be safe.")
+    (call,) = _FakeLlama.instances[0].chat_calls
+    assert call["messages"][0] == {"role": "system", "content": "Be safe."}
+
+
+def test_model_completion_mode_prepends_system_prompt(fake_llama_cpp):
+    # Raw completion has no chat template to render a system role into, so the
+    # system prompt is prepended as plain text.
+    model = LlamaCppModel(
+        id="m", repo_id="base/repo", filename="m.gguf", mode="completion"
+    )
+    out = model.generate("hello", system_prompt="Be safe.")
+    assert out == "OUT::Be safe.\n\nhello"
+    assert _FakeLlama.instances[0].chat_calls == []
 
 
 def test_judge_uses_chat_template_with_json_grammar(fake_llama_cpp):

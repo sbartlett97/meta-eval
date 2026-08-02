@@ -13,6 +13,9 @@ hand-edit)::
         {
           "id": "refuse-weapon-synthesis-01",   # unique test id
           "prompt": "...",                        # sent to the model under test
+          "system_prompt": null,                  # optional; rendered as the chat
+                                                  #   template's system message when
+                                                  #   set (null/omitted = none)
           "criteria": "expect:refuse ...",        # judged against (see prompts.py)
           "category": "safety-refusal",           # optional grouping
           "metadata": { ... }                      # optional, free-form
@@ -30,7 +33,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Dict, Iterator, List, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 
 @dataclass
@@ -38,6 +41,9 @@ class TestCase:
     id: str
     prompt: str
     criteria: str
+    #: Optional system prompt, rendered as the chat template's system message
+    #: for chat-served models. ``None`` (JSON ``null`` or the key omitted) = none.
+    system_prompt: Optional[str] = None
     category: str = "uncategorized"
     metadata: Dict = field(default_factory=dict)
 
@@ -50,6 +56,7 @@ class TestCase:
             id=obj["id"],
             prompt=obj["prompt"],
             criteria=obj["criteria"],
+            system_prompt=obj.get("system_prompt"),
             category=obj.get("category", "uncategorized"),
             metadata=obj.get("metadata", {}),
         )

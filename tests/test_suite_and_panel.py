@@ -19,6 +19,20 @@ def test_load_example_suite():
     assert all(t.criteria for t in tests)
 
 
+def test_load_suite_parses_optional_system_prompt(tmp_path):
+    p = tmp_path / "suite.json"
+    p.write_text(json.dumps({"evals": [
+        {"id": "with", "prompt": "p", "criteria": "c",
+         "system_prompt": "You are terse."},
+        {"id": "null", "prompt": "p", "criteria": "c", "system_prompt": None},
+        {"id": "omitted", "prompt": "p", "criteria": "c"},
+    ]}))
+    by_id = {t.id: t for t in load_test_suite(str(p))}
+    assert by_id["with"].system_prompt == "You are terse."
+    assert by_id["null"].system_prompt is None
+    assert by_id["omitted"].system_prompt is None
+
+
 def test_load_json_suite_ignores_extra_top_level_keys(tmp_path):
     p = tmp_path / "suite.json"
     p.write_text(json.dumps({

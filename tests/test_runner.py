@@ -10,7 +10,11 @@ from harness.test_runner import TestRunner as Runner
 class _FakeModel:
     id = "m"
 
+    def __init__(self):
+        self.calls = []
+
     def generate(self, prompt, **kwargs):
+        self.calls.append({"prompt": prompt, **kwargs})
         return "out:" + prompt
 
 
@@ -32,8 +36,9 @@ class _FakeLoader:
 def _write_suite(tmp_path):
     p = tmp_path / "suite.json"
     p.write_text(json.dumps({"evals": [
-        {"id": "t1", "prompt": "p1", "criteria": "c"},
-        {"id": "t2", "prompt": "p2", "criteria": "c"},
+        {"id": "t1", "prompt": "p1", "criteria": "c",
+         "system_prompt": "Be terse."},
+        {"id": "t2", "prompt": "p2", "criteria": "c", "system_prompt": None},
     ]}))
     return str(p)
 
@@ -55,6 +60,23 @@ def test_runner_records_generation_latency(tmp_path):
         assert isinstance(r["latency_s"], (int, float))
         assert r["latency_s"] >= 0
         assert r["error"] is None
+
+
+def test_runner_passes_and_records_system_prompt(tmp_path):
+    out = tmp_path / "outputs.json"
+    model = _FakeModel()
+    runner = Runner(_write_suite(tmp_path), _FakeLoader(model), results_path=str(out))
+    runner.run_tests(["m"])
+
+    # t1's system prompt reaches the model as a generate kwarg; t2 has none,
+    # so the kwarg is not sent at all.
+    assert model.calls[0]["system_prompt"] == "Be terse."
+    assert "system_prompt" not in model.calls[1]
+
+    # And it is persisted on the output rows (null for t2).
+    rows = _read_outputs(out)
+    assert rows[0]["system_prompt"] == "Be terse."
+    assert rows[1]["system_prompt"] is None
 
 
 def test_runner_times_failed_generations_too(tmp_path):

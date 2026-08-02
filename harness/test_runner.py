@@ -68,9 +68,14 @@ class TestRunner:
         logger.info("Wrote %d output row(s) to %s", len(rows), self.results_path)
 
     def _run_one(self, model, model_id: str, test: TestCase, gen_kwargs: dict) -> dict:
+        # The per-test system prompt (None when the case has none) rides along as
+        # a generate kwarg; each backend renders it into its chat template.
+        call_kwargs = dict(gen_kwargs)
+        if test.system_prompt is not None:
+            call_kwargs["system_prompt"] = test.system_prompt
         start = time.monotonic()
         try:
-            output = model.generate(test.prompt, **gen_kwargs)
+            output = model.generate(test.prompt, **call_kwargs)
             error = None
         except Exception as exc:  # noqa: BLE001 -- one bad test shouldn't abort the run
             logger.warning("Generation failed (%s / %s): %s", model_id, test.id, exc)
@@ -88,6 +93,7 @@ class TestRunner:
             "model": model_id,
             "category": test.category,
             "criteria": test.criteria,
+            "system_prompt": test.system_prompt,
             "output": output,
             "error": error,
             "latency_s": round(latency_s, 3),
