@@ -323,7 +323,13 @@ class LlamaCppEngine:
                 logger.warning("Error closing llama.cpp engine %s: %s", self.key, exc)
 
     def generate(self, prompt: str, **kwargs) -> str:
-        """Run a single prompt through the in-process engine and return its text."""
+        """Run a single raw-completion prompt and return its text.
+
+        Note: this is a **raw** completion — no chat template is applied, so an
+        instruction-tuned GGUF will tend to *continue* the prompt rather than
+        answer it. Use :meth:`chat` when the model should respond as an
+        assistant (all instruction-tuned ``-it`` / ``-instruct`` checkpoints).
+        """
         self._ensure_loaded()
         with _CACHE_LOCK:
             _ENGINE_CACHE.move_to_end(self.key)  # touch: most-recently used
@@ -333,3 +339,26 @@ class LlamaCppEngine:
             temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
         )
         return result["choices"][0]["text"]
+
+    def chat(self, prompt: str, json_only: bool = False, **kwargs) -> str:
+        """Send ``prompt`` as a single user turn through the model's chat template.
+
+        ``create_chat_completion`` applies the chat template embedded in the GGUF
+        (Gemma/Mistral/Llama turn markers etc.), so instruction-tuned models
+        actually answer instead of continuing the text. With ``json_only=True``
+        decoding is grammar-constrained to a valid JSON object via llama.cpp's
+        ``response_format`` — the model *cannot* emit non-JSON prose.
+        """
+        self._ensure_loaded()
+        with _CACHE_LOCK:
+            _ENGINE_CACHE.move_to_end(self.key)  # touch: most-recently used
+        call_kwargs = {
+            "max_tokens": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+            "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
+        }
+        if json_only:
+            call_kwargs["response_format"] = {"type": "json_object"}
+        result = self._llm.create_chat_completion(
+            messages=[{"role": "user", "content": prompt}], **call_kwargs
+        )
+        return result["choices"][0]["message"]["content"]

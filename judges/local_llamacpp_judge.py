@@ -39,7 +39,8 @@ class LocalLlamaCppJudge(Judge):
         engine_kwargs: ``llama_cpp.Llama`` constructor kwargs (from the hardware
             profile). Optional; defaults apply when omitted.
         max_tokens: Generation cap for the judge's JSON verdict.
-        temperature: Sampling temperature.
+        temperature: Sampling temperature. Defaults to 0.0 (deterministic), the
+            same as the remote judges — a judge should not sample.
     """
 
     provider = "local"
@@ -52,7 +53,7 @@ class LocalLlamaCppJudge(Judge):
         additional_files: Optional[Sequence[str]] = None,
         engine_kwargs: Optional[Dict] = None,
         max_tokens: int = 256,
-        temperature: float = 0.7,
+        temperature: float = 0.0,
     ) -> None:
         super().__init__()
         self.model_id = model_id
@@ -72,9 +73,15 @@ class LocalLlamaCppJudge(Judge):
             engine_kwargs=self.engine_kwargs,
         )
 
+        # Chat, not raw completion: instruction-tuned GGUFs need their chat
+        # template applied or they continue the prompt instead of answering.
+        # json_only grammar-constrains decoding to a valid JSON object.
         start = time.monotonic()
-        text = engine.generate(
-            prompt, max_tokens=self.max_tokens, temperature=self.temperature
+        text = engine.chat(
+            prompt,
+            json_only=True,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
         )
         latency = time.monotonic() - start
 

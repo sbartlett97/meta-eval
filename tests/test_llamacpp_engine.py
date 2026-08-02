@@ -31,6 +31,7 @@ class _FakeLlama:
         self.kwargs = kwargs
         self.closed = False
         self.calls = []
+        self.chat_calls = []
         _FakeLlama.instances.append(self)
 
     @classmethod
@@ -42,6 +43,18 @@ class _FakeLlama:
             {"prompt": prompt, "max_tokens": max_tokens, "temperature": temperature}
         )
         return {"choices": [{"text": f"OUT::{prompt}"}]}
+
+    def create_chat_completion(self, messages, max_tokens=None, temperature=None,
+                               response_format=None):
+        self.chat_calls.append({
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "response_format": response_format,
+        })
+        return {"choices": [{"message": {
+            "content": '{"verdict": "PASS", "confidence": 0.9, "rationale": "ok"}'
+        }}]}
 
     def close(self):
         self.closed = True
@@ -125,6 +138,26 @@ def test_sampling_params_forwarded(fake_llama_cpp):
     call = _FakeLlama.instances[0].calls[0]
     assert call["max_tokens"] == 32
     assert call["temperature"] == pytest.approx(0.9)
+
+
+def test_chat_uses_chat_completion_and_json_grammar(fake_llama_cpp):
+    engine = llamacpp_engine.get_engine(repo_id="org/repo", filename="m.gguf")
+    text = engine.chat("judge this", json_only=True, max_tokens=64, temperature=0.0)
+    assert '"verdict"' in text
+
+    llm = _FakeLlama.instances[0]
+    assert llm.calls == []  # chat path, not raw completion
+    (call,) = llm.chat_calls
+    assert call["messages"] == [{"role": "user", "content": "judge this"}]
+    assert call["response_format"] == {"type": "json_object"}  # JSON-constrained
+    assert call["temperature"] == 0.0
+
+
+def test_chat_without_json_only_has_no_response_format(fake_llama_cpp):
+    engine = llamacpp_engine.get_engine(repo_id="org/repo", filename="m.gguf")
+    engine.chat("hello")
+    (call,) = _FakeLlama.instances[0].chat_calls
+    assert call["response_format"] is None
 
 
 def test_get_engine_caches_by_ref(fake_llama_cpp):
@@ -236,6 +269,21 @@ def test_model_and_judge_share_one_engine(fake_llama_cpp):
     verdict = judge.evaluate("t1", "some model output", "expect:refuse")
     assert verdict.judge_id == "j"
     assert len(_FakeLlama.instances) == 1  # same cached engine, one load
+
+
+def test_judge_uses_chat_template_with_json_grammar(fake_llama_cpp):
+    # The judge must go through the chat template (instruct GGUFs continue raw
+    # prompts instead of answering) with JSON-constrained decoding at temp 0.
+    judge = LocalLlamaCppJudge(model_id="org/j", judge_id="j", gguf_file="j.gguf")
+    verdict = judge.evaluate("t1", "output", "expect:refuse")
+
+    assert verdict.verdict == "PASS"  # fake's JSON parsed cleanly
+    assert verdict.error is None
+    llm = _FakeLlama.instances[0]
+    assert llm.calls == []  # never a raw completion
+    (call,) = llm.chat_calls
+    assert call["response_format"] == {"type": "json_object"}
+    assert call["temperature"] == 0.0  # deterministic, like the remote judges
 
 
 def test_batch_judging_loads_each_local_judge_once(fake_llama_cpp):
