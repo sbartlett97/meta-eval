@@ -29,25 +29,35 @@
 # (Llama.from_pretrained), so it fetches exactly the file the engine will load --
 # never the whole repo of quants -- and fails loudly if the name is wrong.
 # `additional_files` fetches extra parts (e.g. split-GGUF shards) alongside it.
+#
+# `serving.mode` (llamacpp only) controls how test prompts are sent:
+#   chat       -- DEFAULT. Prompt goes through the GGUF's embedded chat template
+#                 (create_chat_completion). Required for instruction-tuned
+#                 checkpoints (-it / -instruct); without it they *continue* the
+#                 prompt instead of answering it.
+#   completion -- raw text completion (create_completion), for base
+#                 (non-instruct) checkpoints like the two below.
 local_models:
   - id: "mistral-7b-4bit"
-    checkpoint: "unsloth/Mistral-7B-v0.3-GGUF"   # pre-quantized GGUF repo
+    checkpoint: "unsloth/Mistral-7B-v0.3-GGUF"   # pre-quantized GGUF repo (BASE model)
     quantization: "4-bit"
     size_gb: 4.2
     context_tokens: 32768
     serving:
       engine: "llamacpp"              # llamacpp (in-process GGUF) | ollama
       gguf_file: "*Q4_K_M.gguf"       # glob; or an exact name like the example above
+      mode: "completion"              # base checkpoint -> raw completion
       ollama_tag: "mistral:7b"
 
   - id: "llama-2-7b-4bit"
-    checkpoint: "unsloth/Llama-2-7b-GGUF"         # pre-quantized GGUF repo
+    checkpoint: "unsloth/Llama-2-7b-GGUF"         # pre-quantized GGUF repo (BASE model)
     quantization: "4-bit"
     size_gb: 4.1
     context_tokens: 4096
     serving:
       engine: "llamacpp"
       gguf_file: "*Q4_K_M.gguf"
+      mode: "completion"
       ollama_tag: "llama2:7b"
 
   # Example: an exact GGUF file name, per HuggingFace's llama.cpp snippet. This is

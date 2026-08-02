@@ -52,9 +52,11 @@ class _FakeLlama:
             "temperature": temperature,
             "response_format": response_format,
         })
-        return {"choices": [{"message": {
-            "content": '{"verdict": "PASS", "confidence": 0.9, "rationale": "ok"}'
-        }}]}
+        if response_format is not None:  # JSON-constrained -> a valid verdict
+            content = '{"verdict": "PASS", "confidence": 0.9, "rationale": "ok"}'
+        else:  # echo, so tests can assert the prompt went through the chat path
+            content = f"CHAT::{messages[-1]['content']}"
+        return {"choices": [{"message": {"content": content}}]}
 
     def close(self):
         self.closed = True
@@ -265,10 +267,28 @@ def test_model_and_judge_share_one_engine(fake_llama_cpp):
         model_id="shared/repo", judge_id="j", gguf_file="*Q4.gguf"
     )
 
-    assert model.generate("prompt-1") == "OUT::prompt-1"
+    # Default mode is chat: the prompt goes through the chat template.
+    assert model.generate("prompt-1") == "CHAT::prompt-1"
     verdict = judge.evaluate("t1", "some model output", "expect:refuse")
     assert verdict.judge_id == "j"
     assert len(_FakeLlama.instances) == 1  # same cached engine, one load
+
+
+def test_model_mode_completion_uses_raw_generate(fake_llama_cpp):
+    model = LlamaCppModel(
+        id="m", repo_id="base/repo", filename="m.gguf", mode="completion"
+    )
+    assert model.generate("prompt-1") == "OUT::prompt-1"  # raw completion path
+    llm = _FakeLlama.instances[0]
+    assert llm.chat_calls == []
+
+
+def test_model_chat_mode_never_json_constrains(fake_llama_cpp):
+    # Test models chat freely -- only the judge uses the JSON grammar.
+    model = LlamaCppModel(id="m", repo_id="it/repo", filename="m.gguf")
+    model.generate("hello")
+    (call,) = _FakeLlama.instances[0].chat_calls
+    assert call["response_format"] is None
 
 
 def test_judge_uses_chat_template_with_json_grammar(fake_llama_cpp):
@@ -342,6 +362,32 @@ def test_factory_accepts_model_style_judge_entry():
     assert judge.gguf_file == "*Q4_K_M.gguf"
     assert judge.additional_files == ["mmproj-F16.gguf"]
     assert judge.engine_kwargs == {"n_ctx": 2048}
+
+
+def test_model_loader_reads_serving_mode():
+    from harness.model_loader import ModelLoader
+
+    cfg = {"local_models": [
+        {"id": "it-model", "checkpoint": "org/it",
+         "serving": {"engine": "llamacpp", "gguf_file": "m.gguf"}},
+        {"id": "base-model", "checkpoint": "org/base",
+         "serving": {"engine": "llamacpp", "gguf_file": "m.gguf",
+                     "mode": "completion"}},
+    ]}
+    loader = ModelLoader(cfg)
+    assert loader.load("it-model").mode == "chat"  # default
+    assert loader.load("base-model").mode == "completion"
+
+
+def test_model_loader_rejects_unknown_mode():
+    from harness.model_loader import ModelLoader
+
+    cfg = {"local_models": [
+        {"id": "typo", "checkpoint": "org/x",
+         "serving": {"engine": "llamacpp", "gguf_file": "m.gguf", "mode": "cht"}},
+    ]}
+    with pytest.raises(ValueError, match="serving.mode"):
+        ModelLoader(cfg).load("typo")
 
 
 def test_factory_unknown_entry_error_mentions_both_shapes():

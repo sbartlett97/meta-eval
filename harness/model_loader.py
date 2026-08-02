@@ -84,6 +84,14 @@ class LlamaCppModel:
     in-process via :mod:`harness.llamacpp_engine`, which loads models sequentially
     so a test model and the judges never all hold weights at once. ``engine_kwargs``
     come from the hardware profile's ``llamacpp_defaults``.
+
+    ``mode`` controls how prompts are sent (``serving.mode`` in models.yaml):
+
+    * ``"chat"`` (default) — the prompt goes through the GGUF's embedded chat
+      template via ``create_chat_completion``. This is what instruction-tuned
+      checkpoints (``-it`` / ``-instruct``) need; a raw completion makes them
+      *continue* the prompt instead of answering it.
+    * ``"completion"`` — raw text completion, for base (non-instruct) checkpoints.
     """
 
     id: str
@@ -91,6 +99,7 @@ class LlamaCppModel:
     filename: Optional[str] = None
     additional_files: List[str] = field(default_factory=list)
     engine_kwargs: Dict = field(default_factory=dict)
+    mode: str = "chat"
 
     def generate(self, prompt: str, **kwargs) -> str:
         engine = llamacpp_engine.get_engine(
@@ -99,7 +108,8 @@ class LlamaCppModel:
             additional_files=self.additional_files,
             engine_kwargs=self.engine_kwargs,
         )
-        return engine.generate(
+        call = engine.generate if self.mode == "completion" else engine.chat
+        return call(
             prompt,
             max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
             temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
@@ -188,12 +198,20 @@ class ModelLoader:
         engine = serving.get("engine") or self.prefer_engine
 
         if engine == "llamacpp":
+            mode = serving.get("mode", "chat")
+            if mode not in ("chat", "completion"):
+                raise ValueError(
+                    f"Unsupported serving.mode {mode!r} for {model_id!r}: "
+                    "expected 'chat' (default; applies the chat template) or "
+                    "'completion' (raw text completion for base checkpoints)."
+                )
             return LlamaCppModel(
                 id=model_id,
                 repo_id=entry["checkpoint"],
                 filename=serving.get("gguf_file"),
                 additional_files=list(serving.get("additional_files") or []),
                 engine_kwargs=dict(self._llamacpp_kwargs),
+                mode=mode,
             )
 
         if engine == "ollama":

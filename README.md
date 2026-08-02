@@ -221,8 +221,16 @@ local_models:
     serving:
       engine: "llamacpp"          # llamacpp (in-process GGUF) | ollama
       gguf_file: "*Q4_K_M.gguf"   # the exact quant to load
+      mode: "completion"          # chat (default; instruct models) | completion (base)
       ollama_tag: "mistral:7b"    # only used if engine: ollama
 ```
+
+**Chat vs completion.** `serving.mode: chat` (the default) sends each test prompt
+through the GGUF's embedded chat template (`create_chat_completion`) — required
+for instruction-tuned checkpoints (`-it` / `-instruct`), which *continue* a raw
+prompt instead of answering it. Set `mode: "completion"` for base (non-instruct)
+checkpoints. Local judges always use the chat path, with decoding additionally
+grammar-constrained to valid JSON.
 
 ### Ollama (models under test only)
 
