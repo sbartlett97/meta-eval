@@ -92,8 +92,11 @@ docs/critical-assessment.md  # the audit this round of fixes addresses
   is self-grading, and silently invalidates any judge-bias analysis. The two
   local judges are deliberately different checkpoints (verified live against
   the HuggingFace API — real, ungated, instruct-tuned) from every model under
-  test. Keep this invariant when editing either config; `tests/test_compare.py`
-  and the judges config itself document why.
+  test. Keep this invariant when editing either config;
+  `tests/test_judge_independence.py` enforces it. Every model and judge also
+  declares a `family` (architecture), and models whose name claims a teacher
+  (e.g. "Claude-Mythos") carry `name_claims_teacher`, so the meta-evaluation
+  can report same-family judge/model pairs separately.
 - **`system_prompt` and multi-turn (`turns`) are real, not suite metadata that
   gets silently dropped.** `TestCase` (`harness/test_suite.py`) carries both;
   `TestRunner` sends `system_prompt` through `generate()`/`generate_conversation()`

@@ -35,6 +35,7 @@ judges:
   # generation or judging if an enabled judge has no key
   # (harness.evaluator.require_credentials).
   - id: "claude-sonnet-4-6"
+    family: claude
     provider: "anthropic"
     model: "claude-sonnet-4-6"
     access: "api"
@@ -43,6 +44,7 @@ judges:
     enabled: true
 
   - id: "gpt-4o"
+    family: gpt
     provider: "openai"
     model: "gpt-4o"
     access: "api"
@@ -62,6 +64,7 @@ judges:
   # filename doesn't match, so an unverified name here would abort the whole
   # `--judges all` run before any output is generated.
   - id: "mistral-7b-local"
+    family: mistral
     provider: "local"
     model: "bartowski/Mistral-7B-Instruct-v0.3-GGUF"
     access: "llamacpp"
@@ -72,6 +75,7 @@ judges:
     enabled: true
 
   - id: "llama-3.2-3b-local"
+    family: llama
     provider: "local"
     model: "bartowski/Llama-3.2-3B-Instruct-GGUF"
     access: "llamacpp"
@@ -88,6 +92,7 @@ judges:
   # with abstained=true, so they never vote or count in agreement statistics.
   # Set refusal_votes: true to make them vote. See judges/heuristic_judge.py.
   - id: "heuristic-baseline"
+    family: null   # not a model
     provider: "deterministic"
     access: "none"
     cost_per_1k_tokens: 0.0
