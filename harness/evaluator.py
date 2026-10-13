@@ -107,6 +107,15 @@ def run_evaluation(
     # every row before the next judge runs). This keeps a sequentially-loaded
     # local judge resident for all its calls instead of reloading per row.
     rows = _load_output_rows(outputs_path)
+    # A failed generation has no response to grade. Judging its empty output
+    # would record the failure as model behaviour (validation gap C3), so these
+    # rows skip the panel and are kept as missing data instead.
+    judged_rows = [row for row in rows if not row.get("error")]
+    if len(judged_rows) < len(rows):
+        logger.warning(
+            "Skipping %d row(s) whose generation failed; they are recorded with "
+            "generation_error set and no verdicts.", len(rows) - len(judged_rows),
+        )
     items = [
         EvalItem(
             test_id=row["test_id"],
@@ -120,9 +129,9 @@ def run_evaluation(
             turns=tuple(row.get("turns") or ()),
             system_prompt=row.get("system_prompt"),
         )
-        for row in rows
+        for row in judged_rows
     ]
-    results = panel.evaluate_batch(items)
+    results = iter(panel.evaluate_batch(items))
 
     records = [
         {
@@ -138,10 +147,9 @@ def run_evaluation(
             "technique": row.get("technique", ""),
             "severity": row.get("severity", ""),
             "source": row.get("source", ""),
-            "verdicts": [v.to_dict() for v in result.verdicts],
-            "consensus": aggregate_verdicts(result),
+            **_judgement(row, results),
         }
-        for row, result in zip(rows, results)
+        for row in rows
     ]
     payload = {
         "verdicts": records,
@@ -170,6 +178,19 @@ def run_evaluation(
             sink.write("\n")
         logger.info("Wrote judge meta-evaluation to %s", meta_eval_path)
     return verdicts_path
+
+
+def _judgement(row: Dict, results) -> Dict:
+    """Verdict fields for one output row; ``results`` yields the panel results
+    for the judged (non-errored) rows, in order."""
+    if row.get("error"):
+        return {"generation_error": row["error"], "verdicts": [], "consensus": None}
+    result = next(results)
+    return {
+        "generation_error": None,
+        "verdicts": [v.to_dict() for v in result.verdicts],
+        "consensus": aggregate_verdicts(result),
+    }
 
 
 def _load_output_rows(outputs_path: str) -> List[Dict]:

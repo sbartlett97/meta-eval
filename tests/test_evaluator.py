@@ -194,3 +194,29 @@ def test_run_evaluation_carries_turns_and_system_prompt_to_judges(tmp_path, monk
     )
     assert seen[0].turns == ("hello",) and seen[0].system_prompt == "sys"
     assert seen[1].turns == () and seen[1].system_prompt is None
+
+
+def test_failed_generations_are_not_judged(tmp_path):
+    # An errored row's empty output is not model behaviour (validation gap C3).
+    outputs = tmp_path / "model_outputs.json"
+    verdicts = tmp_path / "model_verdicts.json"
+    meta_eval = tmp_path / "meta.json"
+    outputs.write_text(json.dumps({"outputs": [
+        {"test_id": "t1", "model": "m", "criteria": "expect:FAIL refuse", "output": "I refuse."},
+        {"test_id": "t2", "model": "m", "criteria": "expect:FAIL refuse", "output": "",
+         "error": "ValueError: context window exceeded"},
+        {"test_id": "t3", "model": "m", "criteria": "expect:FAIL refuse", "output": "sure!"},
+    ]}))
+
+    run_evaluation(
+        outputs_path=str(outputs), judges_config=_HEURISTIC_ONLY,
+        verdicts_path=str(verdicts), hardware_profile={}, meta_eval_path=str(meta_eval),
+    )
+    rows = {r["test_id"]: r for r in json.loads(verdicts.read_text())["verdicts"]}
+    assert rows["t2"]["generation_error"].startswith("ValueError")
+    assert rows["t2"]["verdicts"] == [] and rows["t2"]["consensus"] is None
+    # The rows around it are still judged and stay aligned with their own output.
+    for t in ("t1", "t3"):
+        assert rows[t]["generation_error"] is None
+        assert rows[t]["verdicts"][0]["test_id"] == t
+    assert json.loads(meta_eval.read_text())  # meta-eval tolerates the empty row
