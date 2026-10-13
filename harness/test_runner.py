@@ -17,6 +17,7 @@ While a run is in progress, each row is also appended to
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -98,14 +99,27 @@ class TestRunner:
         gen_kwargs = gen_kwargs or {}
         os.makedirs(os.path.dirname(self.results_path) or ".", exist_ok=True)
         models = list(models)
+        # Everything that changes what a row means. Resuming under a different
+        # header would mix two configurations in one run, so it is refused.
         header = {
             "suite_sha256": provenance.file_sha256(self.test_suite_path),
             "n_samples": n_samples,
             "seed": seed,
+            "gen_kwargs": gen_kwargs,
+            "models_config_sha256": _config_sha256(getattr(self.model_loader, "config", None)),
         }
 
         done: Dict[Tuple[str, str, int], dict] = {}
-        if resume:
+        if resume and not os.path.exists(self.checkpoint_path):
+            # Nothing to resume. Without this check a --resume on a finished
+            # run would regenerate everything and replace its results.
+            if os.path.exists(self.results_path) and not overwrite:
+                raise FileExistsError(
+                    f"Nothing to resume: {self.checkpoint_path} does not exist, and "
+                    f"{self.results_path} is a finished run. Pass --overwrite to replace it."
+                )
+            logger.info("No checkpoint at %s; starting from scratch", self.checkpoint_path)
+        elif resume:
             done = self._load_checkpoint(header)
         elif os.path.exists(self.checkpoint_path):
             raise FileExistsError(
@@ -175,9 +189,6 @@ class TestRunner:
         mixing rows from two configurations would silently corrupt the run.
         A truncated last line (a crash mid-write) is ignored.
         """
-        if not os.path.exists(self.checkpoint_path):
-            logger.info("No checkpoint at %s; starting from scratch", self.checkpoint_path)
-            return {}
         with open(self.checkpoint_path, encoding="utf-8") as source:
             lines = source.read().splitlines()
         saved = json.loads(lines[0]).get("header") if lines else None
@@ -281,6 +292,13 @@ class TestRunner:
             "error": error,
             "latency_s": round(latency_s, 3),
         }
+
+
+def _config_sha256(config) -> Optional[str]:
+    """Stable hash of the loader's parsed models config (None if unavailable)."""
+    if not isinstance(config, dict):
+        return None
+    return hashlib.sha256(json.dumps(config, sort_keys=True, default=str).encode()).hexdigest()
 
 
 def _all_complete(splits: List[SplitReply]) -> Optional[bool]:

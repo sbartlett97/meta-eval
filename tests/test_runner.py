@@ -171,7 +171,8 @@ def test_resume_reruns_errored_rows(tmp_path):
     checkpoint = tmp_path / "outputs.json.partial.jsonl"
     rows = _read_outputs(out)
     header = {"header": {"suite_sha256": json.loads(out.read_text())["provenance"]["suite_sha256"],
-                         "n_samples": 1, "seed": 0}}
+                         "n_samples": 1, "seed": 0, "gen_kwargs": {},
+                         "models_config_sha256": None}}
     checkpoint.write_text("\n".join(json.dumps(x) for x in [header, *rows]) + "\n")
 
     model = _FakeModel()
@@ -362,4 +363,46 @@ def test_resume_refuses_a_checkpoint_with_a_different_seed(tmp_path):
     with pytest.raises(CheckpointMismatchError, match="seed"):
         Runner(suite, _FakeLoader(_FakeModel()), results_path=str(out)).run_tests(
             ["m"], seed=2, resume=True
+        )
+
+
+
+def test_resume_on_a_finished_run_refuses_instead_of_regenerating(tmp_path):
+    import pytest
+
+    out = tmp_path / "outputs.json"
+    suite = _write_suite(tmp_path)
+    Runner(suite, _FakeLoader(_FakeModel()), results_path=str(out)).run_tests(["m"])
+    before = out.read_text()
+    model = _FakeModel()
+    with pytest.raises(FileExistsError, match="Nothing to resume"):
+        Runner(suite, _FakeLoader(model), results_path=str(out)).run_tests(["m"], resume=True)
+    assert model.calls == [] and out.read_text() == before
+
+
+def test_resume_with_nothing_to_resume_and_no_results_just_runs(tmp_path):
+    out = tmp_path / "outputs.json"
+    Runner(_write_suite(tmp_path), _FakeLoader(_FakeModel()), results_path=str(out)).run_tests(
+        ["m"], resume=True
+    )
+    assert len(_read_outputs(out)) == 2
+
+
+def test_resume_refuses_after_the_models_config_changed(tmp_path):
+    import pytest
+
+    from harness.test_runner import CheckpointMismatchError
+
+    class _ConfigLoader(_FakeLoader):
+        def __init__(self, model, max_tokens):
+            super().__init__(model)
+            self.config = {"local_models": [{"id": "m", "serving": {"max_tokens": max_tokens}}]}
+
+    out = tmp_path / "outputs.json"
+    suite = _write_suite(tmp_path)
+    with pytest.raises(KeyboardInterrupt):
+        Runner(suite, _ConfigLoader(_CrashAfter(1), 512), results_path=str(out)).run_tests(["m"])
+    with pytest.raises(CheckpointMismatchError, match="models_config_sha256"):
+        Runner(suite, _ConfigLoader(_FakeModel(), 4096), results_path=str(out)).run_tests(
+            ["m"], resume=True
         )
