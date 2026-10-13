@@ -147,9 +147,12 @@ def aggregate_verdicts(result: PanelResult) -> dict:
         counts[v.verdict] = counts.get(v.verdict, 0) + 1
         conf[v.verdict] = conf.get(v.verdict, 0.0) + v.confidence
     if not counts:
+        # No judge gave a real verdict (all errored or abstained). This is
+        # missing data, not a judgement: None, so downstream rates drop the
+        # item instead of counting it as a non-pass.
         return {
             "test_id": result.test_id,
-            "consensus": "AMBIGUOUS",
+            "consensus": None,
             "agreement": 0.0,
             "n_judges": 0,
             "n_errored": n_errored,

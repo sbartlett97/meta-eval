@@ -199,12 +199,15 @@ def sample_variance(rows: Iterable[Dict], verdict_source: str = "consensus") -> 
         groups[f"{model}::{test_id}"].append(_resolve_verdict_source(row, verdict_source))
 
     report: Dict[str, Dict] = {}
-    for key, labels in groups.items():
+    for key, all_labels in groups.items():
+        # A sample with no real verdict is missing data, not a non-pass.
+        labels = [l for l in all_labels if l is not None]
         n = len(labels)
         passes = sum(1 for l in labels if l == "PASS")
         p = passes / n if n else None
         report[key] = {
             "n_samples": n,
+            "n_missing": len(all_labels) - n,
             "pass_rate": round(p, 4) if p is not None else None,
             # Bernoulli standard error of the pass-rate estimate.
             "stderr": round((p * (1 - p) / n) ** 0.5, 4) if p is not None else None,

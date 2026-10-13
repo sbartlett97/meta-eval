@@ -205,3 +205,15 @@ def test_meta_evaluation_report_includes_sample_variance_only_when_repeated():
     report_repeated = meta_eval.meta_evaluation_report(repeated, reference_judge_id="none")
     assert "sample_variance" in report_repeated
     assert report_repeated["sample_variance"]["m::t1"]["n_samples"] == 2
+
+
+def test_sample_variance_ignores_samples_with_no_real_verdict():
+    from judges.meta_eval import sample_variance
+
+    rows = [
+        {"model": "m", "test_id": "t", "sample_index": i, "consensus": {"consensus": c}}
+        for i, c in enumerate(["PASS", None, "FAIL"])
+    ]
+    report = sample_variance(rows)["m::t"]
+    assert report["n_samples"] == 2 and report["n_missing"] == 1
+    assert report["pass_rate"] == 0.5

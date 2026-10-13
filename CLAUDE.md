@@ -129,7 +129,13 @@ docs/critical-assessment.md  # the audit this round of fixes addresses
   `aggregate_verdicts` (`judges/judge_panel.py`), `judges.meta_eval._ok_verdicts`,
   and `harness.compare._resolve_verdict` all exclude verdicts with `error` OR
   `abstained` set — extend all three together if you add a fourth "not a real
-  verdict" case, don't patch just one.
+  verdict" case, don't patch just one. When no real verdict is left, the
+  result is `None` (missing data), never `"AMBIGUOUS"`: `aggregate_verdicts`
+  returns `consensus: None`, a failed generation gets `consensus: None` plus
+  `generation_error`, and `compare_pair` / `sample_variance` drop `None` and
+  report how many they dropped. A genuine AMBIGUOUS (the judge read the
+  response and could not decide) stays in the pass-rate denominator as a
+  non-pass, and `compare_pair` reports its count.
 - **Heavy deps are imported lazily** inside the method that needs them (`anthropic`,
   `openai`, `llama_cpp`, `huggingface_hub`), each with a clear install message on
   `ImportError`. Preserve this pattern — the core `pip install -r requirements.txt`

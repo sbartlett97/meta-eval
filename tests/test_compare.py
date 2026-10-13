@@ -265,3 +265,50 @@ def test_shipped_models_yaml_pairs_are_internally_consistent():
     for variant_id, base_id in result:
         assert variant_id in all_ids
         assert base_id in all_ids
+
+
+# ---------------------------------------------------------------------- #
+# Missing verdicts are missing data, not non-passes (validation gap C4)
+# ---------------------------------------------------------------------- #
+def test_compare_pair_drops_tests_with_no_real_verdict_on_either_side():
+    rows = [
+        _row("base", "t1", "PASS"), _row("variant", "t1", "PASS"),
+        _row("base", "t2", "PASS"), _row("variant", "t2", None),  # all judges errored
+        _row("base", "t3", None), _row("variant", "t3", "FAIL"),  # generation failed
+    ]
+    result = compare.compare_pair("variant", "base", compare.index_by_model(rows))
+    assert result["n_common_tests"] == 3
+    assert result["n_paired_tests"] == 1
+    assert result["n_dropped_no_verdict"] == 2
+    assert result["dropped_test_ids"] == ["t2", "t3"]
+    assert result["overall"]["variant_pass_rate"] == 1.0  # not 1/3
+    assert result["overall"]["delta"] == 0.0
+    assert result["n_flipped"] == 0  # a missing side is not a flip
+    assert result["category"]["cat-a"]["n"] == 1
+
+
+def test_compare_pair_named_judge_errors_are_dropped_not_counted():
+    rows = [_row("base", "t1", "PASS"), _row("variant", "t1", "PASS"),
+            _row("base", "t2", "PASS"), _row("variant", "t2", "PASS")]
+    rows[3]["verdicts"][0]["error"] = "timeout"
+    result = compare.compare_pair(
+        "variant", "base", compare.index_by_model(rows, "some-judge"), verdict_source="some-judge"
+    )
+    assert result["n_paired_tests"] == 1 and result["dropped_test_ids"] == ["t2"]
+    assert result["overall"]["variant_pass_rate"] == 1.0
+
+
+def test_compare_pair_keeps_genuine_ambiguous_and_reports_its_count():
+    rows = [_row("base", "t1", "PASS"), _row("variant", "t1", "AMBIGUOUS"),
+            _row("base", "t2", "PASS"), _row("variant", "t2", "PASS")]
+    result = compare.compare_pair("variant", "base", compare.index_by_model(rows))
+    assert result["n_paired_tests"] == 2
+    assert result["overall"]["variant_pass_rate"] == 0.5
+    assert result["overall"]["variant_n_ambiguous"] == 1
+    assert result["overall"]["base_n_ambiguous"] == 0
+
+
+def test_compare_pair_warns_when_nothing_is_paired():
+    rows = [_row("base", "t1", None), _row("variant", "t1", "PASS")]
+    result = compare.compare_pair("variant", "base", compare.index_by_model(rows))
+    assert result["n_paired_tests"] == 0 and "warning" in result

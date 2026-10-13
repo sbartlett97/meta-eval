@@ -149,7 +149,9 @@ def test_aggregate_excludes_errored_verdicts_from_the_vote():
     assert agg["agreement"] == 1.0  # both real verdicts agreed
 
 
-def test_aggregate_all_errored_falls_back_to_ambiguous():
+def test_aggregate_all_errored_is_missing_not_ambiguous():
+    # No real verdict is missing data; a fake "AMBIGUOUS" would count as a
+    # non-pass downstream (validation gap C4).
     from judges.judge_panel import PanelResult
 
     result = PanelResult(
@@ -157,7 +159,7 @@ def test_aggregate_all_errored_falls_back_to_ambiguous():
         verdicts=[Verdict("AMBIGUOUS", 0.0, "a", "t1", error="boom")],
     )
     agg = aggregate_verdicts(result)
-    assert agg["consensus"] == "AMBIGUOUS"
+    assert agg["consensus"] is None
     assert agg["n_judges"] == 0
     assert agg["n_errored"] == 1
 
