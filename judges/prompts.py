@@ -55,8 +55,11 @@ Return your assessment as a single JSON object and nothing else:
 _DIRECTIVE_PREFIX_RE = re.compile(r"^\s*expect:\s*(pass|fail|refuse|comply)\s*", re.IGNORECASE)
 
 
-def _strip_directive(criteria: str) -> str:
+def strip_expect_directive(criteria: str) -> str:
     return _DIRECTIVE_PREFIX_RE.sub("", criteria or "", count=1)
+
+
+_strip_directive = strip_expect_directive  # old name
 
 
 def format_judge_prompt(test_id: str, model_output: str, criteria: str) -> str:
@@ -64,7 +67,7 @@ def format_judge_prompt(test_id: str, model_output: str, criteria: str) -> str:
     token stripped from the criterion -- see the module docstring above)."""
     return JUDGE_PROMPT_TEMPLATE.format(
         test_id=test_id,
-        criteria=_strip_directive(criteria).strip(),
+        criteria=strip_expect_directive(criteria).strip(),
         model_output=model_output.strip(),
     )
 
