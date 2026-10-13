@@ -241,6 +241,70 @@ def sample_variance(rows: Iterable[Dict], verdict_source: str = "consensus") -> 
     return report
 
 
+#: Rubric v2 dimensions (judges/rubric.py): labels compared for equality,
+#: 1-5 scores compared for equality and mean absolute difference.
+_LABEL_DIMS = ("refused", "refusal_style", "correctness", "meets_criterion")
+_LIKERT_DIMS = ("convincingness", "specificity", "helpfulness")
+
+
+def _is_real(verdict: Dict) -> bool:
+    return not verdict.get("error") and not verdict.get("abstained")
+
+
+def self_consistency(rows: Iterable[Dict]) -> Dict[str, Dict]:
+    """How often each judge agrees with itself on re-grading (task 2.10).
+
+    Uses rows that carry ``regrade_verdicts`` (harness.evaluator
+    --self-consistency). A pair counts only when both the first grade and the
+    re-grade are real verdicts. ``decline_changes`` counts pairs where the
+    judge declined (or errored) one time but not the other.
+    """
+    stats: Dict[str, Dict] = defaultdict(lambda: {
+        "n_pairs": 0, "verdict_agree": 0, "decline_changes": 0,
+        "dims": defaultdict(lambda: {"n": 0, "agree": 0, "abs_diff": 0}),
+    })
+    for row in rows:
+        first = {v.get("judge_id"): v for v in row.get("verdicts", [])}
+        for again in row.get("regrade_verdicts") or []:
+            jid = again.get("judge_id")
+            original = first.get(jid)
+            if original is None:
+                continue
+            s = stats[jid]
+            if _is_real(original) != _is_real(again):
+                s["decline_changes"] += 1
+                continue
+            if not _is_real(original):
+                continue
+            s["n_pairs"] += 1
+            s["verdict_agree"] += original.get("verdict") == again.get("verdict")
+            a, b = original.get("scores") or {}, again.get("scores") or {}
+            for dim in _LABEL_DIMS + _LIKERT_DIMS:
+                if dim in a and dim in b:
+                    d = s["dims"][dim]
+                    d["n"] += 1
+                    d["agree"] += a[dim] == b[dim]
+                    if dim in _LIKERT_DIMS:
+                        d["abs_diff"] += abs(a[dim] - b[dim])
+
+    report: Dict[str, Dict] = {}
+    for jid, s in sorted(stats.items()):
+        n = s["n_pairs"]
+        dims = {}
+        for dim, d in sorted(s["dims"].items()):
+            entry = {"n": d["n"], "agreement": round(d["agree"] / d["n"], 4)}
+            if dim in _LIKERT_DIMS:
+                entry["mean_abs_diff"] = round(d["abs_diff"] / d["n"], 4)
+            dims[dim] = entry
+        report[jid] = {
+            "n_pairs": n,
+            "verdict_agreement": round(s["verdict_agree"] / n, 4) if n else None,
+            "decline_changes": s["decline_changes"],
+            "dimensions": dims,
+        }
+    return report
+
+
 def _resolve_verdict_source(row: Dict, verdict_source: str) -> Optional[str]:
     if verdict_source == "consensus":
         return (row.get("consensus") or {}).get("consensus")
@@ -283,6 +347,9 @@ def meta_evaluation_report(
             "Reference judge %r not present in this batch; skipping divergence-from-reference.",
             reference_judge_id,
         )
+
+    if any(row.get("regrade_verdicts") for row in rows):
+        report["self_consistency"] = self_consistency(rows)
 
     variance = sample_variance(rows)
     if any(v["n_samples"] > 1 for v in variance.values()):

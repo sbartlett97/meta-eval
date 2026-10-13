@@ -217,3 +217,41 @@ def test_sample_variance_ignores_samples_with_no_real_verdict():
     report = sample_variance(rows)["m::t"]
     assert report["n_samples"] == 2 and report["n_missing"] == 1
     assert report["pass_rate"] == 0.5
+
+
+# ---------------------------------------------------------------------- #
+# Self-consistency (task 2.10)
+# ---------------------------------------------------------------------- #
+def _sv(judge, verdict, error=None, abstained=False, **scores):
+    return {"judge_id": judge, "verdict": verdict, "error": error, "abstained": abstained,
+            "scores": scores or None}
+
+
+def test_self_consistency_counts_agreement_per_verdict_and_dimension():
+    from judges.meta_eval import self_consistency
+
+    rows = [
+        {"verdicts": [_sv("c", "FAIL", refused=0, specificity=4)],
+         "regrade_verdicts": [_sv("c", "FAIL", refused=0, specificity=2)]},
+        {"verdicts": [_sv("c", "PASS", refused=1, specificity=1)],
+         "regrade_verdicts": [_sv("c", "FAIL", refused=0, specificity=1)]},
+        # Declined once, graded once: a decline change, not a pair.
+        {"verdicts": [_sv("c", "AMBIGUOUS", abstained=True)],
+         "regrade_verdicts": [_sv("c", "PASS", refused=1, specificity=1)]},
+        # Errored both times: ignored.
+        {"verdicts": [_sv("c", "AMBIGUOUS", error="x")],
+         "regrade_verdicts": [_sv("c", "AMBIGUOUS", error="x")]},
+        {"verdicts": [_sv("c", "PASS")]},  # not in the subset
+    ]
+    report = self_consistency(rows)["c"]
+    assert report["n_pairs"] == 2 and report["decline_changes"] == 1
+    assert report["verdict_agreement"] == 0.5
+    assert report["dimensions"]["refused"] == {"n": 2, "agreement": 0.5}
+    assert report["dimensions"]["specificity"] == {"n": 2, "agreement": 0.5, "mean_abs_diff": 1.0}
+
+
+def test_report_includes_self_consistency_only_when_regrades_exist():
+    rows = [_row("t1", [_v("a", "PASS")])]
+    assert "self_consistency" not in meta_eval.meta_evaluation_report(rows)
+    rows[0]["regrade_verdicts"] = [_v("a", "PASS")]
+    assert meta_eval.meta_evaluation_report(rows)["self_consistency"]["a"]["n_pairs"] == 1

@@ -47,7 +47,7 @@ from harness.hydrate import hydrate_weights
 from harness.model_loader import ModelLoader
 from harness.test_runner import CheckpointMismatchError, TestRunner
 from judges.factory import build_judges
-from judges.prompts import JUDGE_PROMPT_TEMPLATE
+from judges import rubric
 from judges.judge_panel import EvalItem, JudgePanel, aggregate_verdicts
 from judges.meta_eval import meta_evaluation_report
 
@@ -90,19 +90,28 @@ def run_evaluation(
     reference_judge_id: Optional[str] = None,
     judge_ids: Optional[List[str]] = None,
     allow_legacy: bool = False,
+    batch: bool = False,
+    self_consistency: float = 0.0,
 ) -> str:
     """Judge previously-generated model outputs; write verdicts. Returns the path.
 
     ``judge_ids`` selects exactly those judges and overrides ``max_priority``
     (see ``judges.factory.select_judge_entries``). An outputs file that
     predates the current schema raises :class:`LegacyOutputsError` unless
-    ``allow_legacy`` is True.
+    ``allow_legacy`` is True. ``self_consistency`` (0-1) re-grades that share
+    of rows with every non-deterministic judge (see :func:`_regrade_subset`).
     """
     judges = build_judges(
         judges_config, max_priority=max_priority, hardware_profile=hardware_profile,
         judge_ids=judge_ids,
     )
     require_credentials(judges)
+    if batch:
+        # Judges with a batch API grade the whole run in one batch (about
+        # half the price; results can take up to 24 h).
+        for judge in judges:
+            if judge.supports_batch:
+                judge.use_batch = True
     panel = JudgePanel(judges)
     logger.info("Judge panel: %s", [j.id for j in judges])
 
@@ -136,10 +145,25 @@ def run_evaluation(
             metadata=row.get("metadata") or {},
             turns=tuple(row.get("turns") or ()),
             system_prompt=row.get("system_prompt"),
+            item_type=row.get("item_type") or "",  # "" -> inferred (judges/items.py)
+            severity_tier=row.get("severity_tier"),
+            reference_answer=row.get("reference_answer"),
         )
         for row in judged_rows
     ]
+    untiered = sum(
+        1 for item in items
+        if item.item_type in ("harmful_request", "jailbreak") and item.severity_tier not in (1, 2, 3)
+    )
+    if untiered:
+        logger.warning(
+            "%d harmful item(s) have no severity_tier; LLM judges score them for refusal "
+            "only (decision D3). Tag tiers 1-2 in the suite to score harm quality.", untiered,
+        )
     results = iter(panel.evaluate_batch(items))
+    # The resolved item type of each judged row, for slicing verdicts later.
+    item_types = {id(row): item.item_type for row, item in zip(judged_rows, items)}
+    regrades = _regrade_subset(panel, judged_rows, items, self_consistency)
 
     records = [
         {
@@ -155,7 +179,10 @@ def run_evaluation(
             "technique": row.get("technique", ""),
             "severity": row.get("severity", ""),
             "source": row.get("source", ""),
+            "item_type": item_types.get(id(row)),
+            "severity_tier": row.get("severity_tier"),
             **_judgement(row, results),
+            **({"regrade_verdicts": regrades[id(row)]} if id(row) in regrades else {}),
         }
         for row in rows
     ]
@@ -166,7 +193,8 @@ def run_evaluation(
             judges_config=judges_config if isinstance(judges_config, str) else None,
             judge_panel=[j.id for j in judges],
             judge_details=[j.describe() for j in judges],
-            judge_prompt_sha256=hashlib.sha256(JUDGE_PROMPT_TEMPLATE.encode()).hexdigest(),
+            rubric_version=rubric.RUBRIC_VERSION,
+            rubric_sha256=rubric.rubric_sha256(),
             # The suite hash, models and seeds live here, so verdicts can be
             # traced back to exactly what was generated.
             outputs_provenance=outputs_provenance,
@@ -191,6 +219,35 @@ def run_evaluation(
             sink.write("\n")
         logger.info("Wrote judge meta-evaluation to %s", meta_eval_path)
     return verdicts_path
+
+
+def in_regrade_subset(row: Dict, fraction: float) -> bool:
+    """Whether a row is in the self-consistency subset. Chosen by a hash of
+    (model, test_id, sample_index), so the same rows are picked on every run
+    and the choice cannot depend on the verdicts."""
+    if fraction <= 0:
+        return False
+    key = f"{row.get('model')}|{row.get('test_id')}|{row.get('sample_index', 0)}"
+    return int(hashlib.sha256(key.encode()).hexdigest()[:8], 16) / 0xFFFFFFFF < fraction
+
+
+def _regrade_subset(panel: JudgePanel, judged_rows: List[Dict], items, fraction: float) -> Dict:
+    """Grade a fixed subset a second time with each non-deterministic judge
+    (task 2.10). Temperature cannot be fixed on current Claude models, so how
+    often a judge agrees with itself is measured instead
+    (judges.meta_eval.self_consistency). Returns ``{id(row): [verdict dicts]}``."""
+    chosen = [(row, item) for row, item in zip(judged_rows, items) if in_regrade_subset(row, fraction)]
+    if not chosen:
+        return {}
+    regrades: Dict[int, List[Dict]] = {id(row): [] for row, _ in chosen}
+    for judge in panel.judges:
+        if judge.provider == "deterministic":
+            continue  # the same input always gives the same verdict
+        verdicts = panel.judge_all(judge, [item for _, item in chosen])
+        for (row, _), verdict in zip(chosen, verdicts):
+            regrades[id(row)].append(verdict.to_dict())
+    logger.info("Self-consistency: re-graded %d row(s)", len(chosen))
+    return regrades
 
 
 def _generation_error(row: Dict) -> Optional[str]:
@@ -289,6 +346,20 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         "empty string to skip it.",
     )
     parser.add_argument(
+        "--batch",
+        action="store_true",
+        help="Grade with the provider's batch API where a judge supports it "
+        "(Claude): about half the price, results can take up to 24 hours.",
+    )
+    parser.add_argument(
+        "--self-consistency",
+        type=float,
+        default=0.0,
+        metavar="FRACTION",
+        help="Re-grade this share of rows (e.g. 0.1) with each non-deterministic "
+        "judge, to measure how often a judge agrees with itself.",
+    )
+    parser.add_argument(
         "--allow-legacy",
         action="store_true",
         help="Judge an outputs file that predates the current schema (no "
@@ -312,7 +383,7 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         type=lambda v: [x.strip() for x in v.split(",") if x.strip()],
         default=None,
         help="Comma-separated judge ids from judges.yaml (e.g. "
-        "heuristic-baseline,claude-sonnet-4-6). Overrides --judges and the "
+        "heuristic-baseline,claude-sonnet-5-5). Overrides --judges and the "
         "enabled flag.",
     )
     parser.add_argument(
@@ -427,6 +498,8 @@ def _cli(argv: Optional[List[str]] = None) -> int:
             reference_judge_id=args.reference_judge,
             judge_ids=args.judge_ids,
             allow_legacy=args.allow_legacy,
+            batch=args.batch,
+            self_consistency=args.self_consistency,
         )
     except LegacyOutputsError as exc:
         logger.error("%s", exc)

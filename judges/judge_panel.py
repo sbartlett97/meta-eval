@@ -14,32 +14,9 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from judges.base import Judge, Verdict
-from judges.heuristic_judge import exact_check_applies
+from judges.items import EvalItem, exact_check_applies  # noqa: F401 -- EvalItem re-exported
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class EvalItem:
-    """One (test, model output) pair to judge -- the unit of :meth:`evaluate_batch`."""
-
-    test_id: str
-    model_output: str
-    criteria: str = ""
-    #: Suite category (e.g. "format-adherence"). Lets a judge dispatch on the
-    #: kind of check being asked for -- see judges/heuristic_judge.py, which
-    #: uses it to run real deterministic checks instead of guessing from prose.
-    category: str = "uncategorized"
-    #: The test case's free-form ``metadata`` (e.g. ``{"check": "json",
-    #: "required_keys": [...]}``). Carries the params a deterministic check
-    #: needs -- see judges/format_checks.py -- without a judge having to parse
-    #: them back out of the English ``criteria`` prose.
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    #: The user turn(s) the model answered (one for a single-turn case) and
-    #: the system prompt it ran under. A judge that sees only the response
-    #: cannot tell whether it fits the request.
-    turns: Tuple[str, ...] = ()
-    system_prompt: Optional[str] = None
 
 
 @dataclass
@@ -88,22 +65,36 @@ class JudgePanel:
         items = list(items)
         results = [PanelResult(test_id=item.test_id) for item in items]
         for judge in self.judges:
-            for item, result in zip(items, results):
-                result.verdicts.append(self._judge(judge, item))
+            for result, verdict in zip(results, self.judge_all(judge, items)):
+                result.verdicts.append(verdict)
         return results
 
-    def _judge(self, judge: Judge, item: EvalItem) -> Verdict:
-        """One judge's verdict on one item.
+    def judge_all(self, judge: Judge, items: Sequence[EvalItem]) -> List[Verdict]:
+        """One judge's verdicts on many items, in item order.
 
-        An item with an exact deterministic check (a format check) is decided
-        by the judge that runs it. The other judges skip it without a call and
-        record an abstained verdict, so they neither outvote the exact check
-        nor spend tokens on it (validation gap C12).
+        Items an exact check decides are skipped for the other judges (see
+        :meth:`_skip_verdict`). The rest go to ``judge.evaluate_many`` in one
+        call, so a batching backend (ClaudeJudge with ``use_batch``) can send
+        them as a single batch.
         """
+        verdicts: List[Optional[Verdict]] = [self._skip_verdict(judge, item) for item in items]
+        todo = [i for i, v in enumerate(verdicts) if v is None]
+        for i, verdict in zip(todo, judge.evaluate_many([items[i] for i in todo])):
+            verdicts[i] = verdict
+        return verdicts  # type: ignore[return-value]
+
+    def _judge(self, judge: Judge, item: EvalItem) -> Verdict:
+        return self.judge_all(judge, [item])[0]
+
+    def _skip_verdict(self, judge: Judge, item: EvalItem) -> Optional[Verdict]:
+        """An abstained "skipped" verdict if an exact deterministic check (a
+        format check) decides this item and this judge does not run it, else
+        None. Skipped judges neither outvote the exact check nor spend tokens
+        on it (validation gap C12)."""
         if (
             self._has_exact_judge
             and not judge.runs_exact_checks
-            and exact_check_applies(item.category, item.criteria, item.metadata)
+            and exact_check_applies(item)
         ):
             return Verdict(
                 verdict="AMBIGUOUS",
@@ -113,9 +104,7 @@ class JudgePanel:
                 rationale="Skipped: an exact deterministic check decides this item.",
                 abstained=True,
             )
-        return judge.evaluate(
-            item.test_id, item.model_output, item.criteria, item.category, item.metadata
-        )
+        return None
 
     def cost_summary(self) -> Dict[str, dict]:
         """Aggregate per-judge latency/token stats from call logs."""

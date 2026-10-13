@@ -261,6 +261,9 @@ class TestRunner:
             "technique": test.technique,
             "severity": test.severity,
             "source": test.source,
+            "item_type": test.item_type,
+            "severity_tier": test.severity_tier,
+            "reference_answer": test.reference_answer,
             "criteria": test.criteria,
             # What the model was asked: every user turn (a single-turn case is
             # one turn) plus the system prompt. Judges need these to grade the

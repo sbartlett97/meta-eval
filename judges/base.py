@@ -10,7 +10,10 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional, Sequence
+
+if TYPE_CHECKING:  # pragma: no cover
+    from judges.items import EvalItem
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +54,12 @@ class Verdict:
     #: judges.meta_eval's inter-judge kappa/bias stats -- both exclude
     #: abstained verdicts the same way they exclude errored ones.
     abstained: bool = False
+    #: Why the verdict is abstained, e.g. ``"judge_declined:cyber"`` when a
+    #: cloud judge refused to grade the content (a result in itself, RQ4).
+    abstain_reason: Optional[str] = None
+    #: Rubric v2 dimension scores plus derived values (refused, specificity,
+    #: harm_score, ...; see judges/rubric.py). None for non-rubric judges.
+    scores: Optional[dict] = None
 
     def __post_init__(self) -> None:
         self.verdict = _normalize_label(self.verdict)
@@ -67,6 +76,8 @@ class Verdict:
             "tokens": self.tokens,
             "error": self.error,
             "abstained": self.abstained,
+            "abstain_reason": self.abstain_reason,
+            "scores": self.scores,
         }
 
 
@@ -109,6 +120,8 @@ class Judge(ABC):
     #: True for a judge that decides exactly-checkable items (format checks)
     #: by code. When one is in the panel, the other judges skip those items.
     runs_exact_checks: bool = False
+    #: True for a judge whose evaluate_many can use a batch API (``use_batch``).
+    supports_batch: bool = False
 
     def __init__(self) -> None:
         self.call_log: List[JudgeCallRecord] = []
@@ -123,31 +136,16 @@ class Judge(ABC):
         return {"id": self.id, "provider": self.provider}
 
     @abstractmethod
-    def _evaluate(
-        self,
-        test_id: str,
-        model_output: str,
-        criteria: str,
-        category: str = "uncategorized",
-        metadata: Optional[dict] = None,
-    ) -> Verdict:
-        """Backend-specific evaluation. Must return a :class:`Verdict`.
+    def _evaluate(self, item: "EvalItem") -> Verdict:
+        """Backend-specific evaluation of one item. Must return a :class:`Verdict`.
 
-        ``category`` (e.g. ``"format-adherence"``) and ``metadata`` (e.g.
-        ``{"check": "json", "required_keys": [...]}``) are the suite's own
-        per-case fields -- most judges ignore them, but a judge that can run a
-        real deterministic check for a category (see ``HeuristicJudge``) needs
-        them to dispatch.
+        ``item`` (judges/items.py) carries the request (``turns``,
+        ``system_prompt``), the response, the criterion, the suite's
+        ``category`` / ``metadata`` and the ``item_type`` that selects the
+        rubric. Most judges use only some of these.
         """
 
-    def evaluate(
-        self,
-        test_id: str,
-        model_output: str,
-        criteria: str,
-        category: str = "uncategorized",
-        metadata: Optional[dict] = None,
-    ) -> Verdict:
+    def evaluate(self, item: "EvalItem") -> Verdict:
         """Evaluate one model output; never raises -- errors become AMBIGUOUS.
 
         Retries up to ``max_retries`` times (linear backoff) before giving up.
@@ -157,6 +155,7 @@ class Judge(ABC):
         was genuinely uncertain" apart from "the call failed" should check
         ``error`` (aggregate_verdicts / judges.meta_eval already do).
         """
+        test_id = item.test_id
         start = time.monotonic()
         verdict = None
         last_exc: Optional[Exception] = None
@@ -165,7 +164,7 @@ class Judge(ABC):
         for attempt in range(1, attempts + 1):
             attempts_made = attempt
             try:
-                verdict = self._evaluate(test_id, model_output, criteria, category, metadata or {})
+                verdict = self._evaluate(item)
                 last_exc = None
                 break
             except NonRetryableJudgeError as exc:
@@ -193,16 +192,25 @@ class Judge(ABC):
             )
         if verdict.latency_s is None:
             verdict.latency_s = time.monotonic() - start
+        self._log_call(verdict)
+        return verdict
+
+    def evaluate_many(self, items: Sequence["EvalItem"]) -> List[Verdict]:
+        """Verdicts for many items, in order. One :meth:`evaluate` per item by
+        default; a backend with a batch API overrides this to send them
+        together (see ClaudeJudge)."""
+        return [self.evaluate(item) for item in items]
+
+    def _log_call(self, verdict: Verdict) -> None:
         self.call_log.append(
             JudgeCallRecord(
                 judge_id=self.id,
-                test_id=test_id,
-                latency_s=verdict.latency_s,
+                test_id=verdict.test_id,
+                latency_s=verdict.latency_s or 0.0,
                 tokens=verdict.tokens,
                 ok=verdict.error is None,
             )
         )
-        return verdict
 
 
 # ---------------------------------------------------------------------- #

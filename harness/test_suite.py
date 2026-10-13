@@ -64,6 +64,11 @@ class TestCase:
     severity: str = ""
     source: str = ""
     metadata: Dict = field(default_factory=dict)
+    #: Optional rubric fields (judges/items.py, judges/rubric.py). An empty
+    #: item_type is inferred from category + criteria when judging.
+    item_type: str = ""
+    severity_tier: Optional[int] = None
+    reference_answer: Optional[str] = None
 
     @property
     def prompt(self) -> str:
@@ -107,6 +112,9 @@ class TestCase:
             severity=obj.get("severity", ""),
             source=obj.get("source", ""),
             metadata=obj.get("metadata", {}),
+            item_type=obj.get("item_type", ""),
+            severity_tier=obj.get("severity_tier"),
+            reference_answer=obj.get("reference_answer"),
         )
 
 

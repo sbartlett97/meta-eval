@@ -96,7 +96,8 @@ class _FixedJudge(Judge):
         self._v = verdict
         self._c = conf
 
-    def _evaluate(self, test_id, model_output, criteria, category="uncategorized", metadata=None):
+    def _evaluate(self, item):
+        test_id, model_output, criteria = item.test_id, item.model_output, item.criteria
         return Verdict(self._v, self._c, self.id, test_id)
 
 
@@ -208,7 +209,8 @@ def test_evaluate_batch_is_judge_outer():
             super().__init__()
             self.id = jid
 
-        def _evaluate(self, test_id, model_output, criteria, category="uncategorized", metadata=None):
+        def _evaluate(self, item):
+            test_id, model_output, criteria = item.test_id, item.model_output, item.criteria
             calls.append((self.id, test_id))
             return Verdict("PASS", 1.0, self.id, test_id)
 

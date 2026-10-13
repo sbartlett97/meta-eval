@@ -1,16 +1,27 @@
-"""GPT-4o judge via the OpenAI API (PRD v3.1).
+"""GPT-4o judge via the OpenAI API, grading with rubric v2 (judges/rubric.py).
 
 Reads ``OPENAI_API_KEY`` from the environment. The SDK is imported lazily.
+
+The model is a dated snapshot (``gpt-4o-2024-11-20``), not the moving
+``gpt-4o`` alias, so the judge cannot change between runs. The answer is
+constrained to the rubric's JSON schema (``response_format`` json_schema,
+strict). When the model declines to grade, OpenAI returns a ``refusal``
+message instead of JSON; that is recorded as abstained with
+``abstain_reason="judge_declined"``.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from typing import Optional
 
+from judges import rubric
 from judges.base import Judge, NonRetryableJudgeError, Verdict
-from judges.prompts import format_judge_prompt, parse_json_from_response
+from judges.items import EvalItem
+
+DEFAULT_MODEL = "gpt-4o-2024-11-20"
 
 
 class GPT4Judge(Judge):
@@ -19,10 +30,10 @@ class GPT4Judge(Judge):
 
     def __init__(
         self,
-        model: str = "gpt-4o",
+        model: str = DEFAULT_MODEL,
         judge_id: str = "gpt-4o",
         api_key: Optional[str] = None,
-        max_tokens: int = 256,
+        max_tokens: int = 1024,
         temperature: float = 0.0,
         max_retries: int = 2,
         retry_backoff_s: float = 1.0,
@@ -46,6 +57,7 @@ class GPT4Judge(Judge):
             "model": self.model,
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
+            "rubric_version": rubric.RUBRIC_VERSION,
         }
 
     def _ensure_client(self):
@@ -60,37 +72,35 @@ class GPT4Judge(Judge):
         self._client = openai.OpenAI(api_key=self._api_key)
         return self._client
 
-    def _evaluate(
-        self,
-        test_id: str,
-        model_output: str,
-        criteria: str,
-        category: str = "uncategorized",
-        metadata: Optional[dict] = None,
-    ) -> Verdict:
+    def _evaluate(self, item: EvalItem) -> Verdict:
         client = self._ensure_client()
-        prompt = format_judge_prompt(test_id, model_output, criteria)
+        system, user, schema = rubric.render_prompt(item)
 
         start = time.monotonic()
         resp = client.chat.completions.create(
             model=self.model,
-            max_tokens=self.max_tokens,
+            max_completion_tokens=self.max_tokens,
             temperature=self.temperature,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {"name": rubric.rubric_key(item), "schema": schema, "strict": True},
+            },
         )
         latency = time.monotonic() - start
 
-        text = resp.choices[0].message.content or ""
-        tokens = getattr(getattr(resp, "usage", None), "completion_tokens", None)
-        parsed = parse_json_from_response(text)
-
-        return Verdict(
-            verdict=parsed.get("verdict"),  # missing -> ValueError -> error, not AMBIGUOUS
-            confidence=parsed.get("confidence", 0.0),
-            judge_id=self.id,
-            test_id=test_id,
-            rationale=parsed.get("rationale", ""),
-            latency_s=latency,
-            tokens=tokens,
-            raw=text,
-        )
+        choice = resp.choices[0]
+        if getattr(choice.message, "refusal", None):
+            verdict = rubric.declined_verdict(
+                self.id, item, "judge_declined", choice.message.refusal
+            )
+        elif choice.finish_reason == "length":
+            raise ValueError(
+                f"judge stopped at max_tokens={self.max_tokens} before finishing its answer"
+            )
+        else:
+            text = choice.message.content or ""
+            verdict = rubric.build_verdict(self.id, item, json.loads(text), raw=text)
+        verdict.latency_s = latency
+        verdict.tokens = getattr(getattr(resp, "usage", None), "completion_tokens", None)
+        return verdict
