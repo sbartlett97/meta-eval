@@ -636,3 +636,25 @@ def test_no_seed_means_none_is_sent(fake_llama_cpp):
     model = LlamaCppModel(id="m", repo_id="base/repo", filename="m.gguf", mode="completion")
     model.generate("hello")
     assert _FakeLlama.instances[0].calls[0]["seed"] is None
+
+
+def test_model_describe_reports_settings_and_resolved_weights(fake_llama_cpp, tmp_path):
+    model = LlamaCppModel(
+        id="m", repo_id="it/repo", filename="*Q4_K_M.gguf",
+        engine_kwargs={"n_ctx": 8192}, reasoning=True, max_tokens=4096,
+    )
+    model.generate("hello")  # loads the engine
+    d = model.describe()
+    assert d["repo_id"] == "it/repo" and d["gguf_file"] == "*Q4_K_M.gguf"
+    assert d["n_ctx"] == 8192 and d["reasoning"] is True and d["max_tokens"] == 4096
+    assert "weights" in d  # None here: the fake has no real file
+
+
+def test_local_judge_describe_is_import_light():
+    # describe() must not load weights (no fake llama_cpp installed here).
+    from judges.local_llamacpp_judge import LocalLlamaCppJudge
+
+    llamacpp_engine.reset_engines()
+    d = LocalLlamaCppJudge(model_id="org/j", judge_id="j", gguf_file="j.gguf",
+                           engine_kwargs={"n_ctx": 8192}).describe()
+    assert d["repo_id"] == "org/j" and d["n_ctx"] == 8192 and d["weights"] is None

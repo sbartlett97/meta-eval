@@ -114,6 +114,9 @@ class HeuristicJudge(Judge):
         super().__init__()
         self.refusal_votes = refusal_votes
 
+    def describe(self) -> dict:
+        return {**super().describe(), "refusal_votes": self.refusal_votes}
+
     def _evaluate(
         self,
         test_id: str,

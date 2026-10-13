@@ -42,6 +42,14 @@ class ClaudeJudge(Judge):
     def has_credentials(self) -> bool:
         return bool(self._api_key)
 
+    def describe(self) -> dict:
+        return {
+            **super().describe(),
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+        }
+
     def _ensure_client(self):
         if self._client is not None:
             return self._client

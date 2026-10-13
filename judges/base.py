@@ -117,6 +117,11 @@ class Judge(ABC):
         """True if this judge can authenticate (always True when it needs nothing)."""
         return True
 
+    def describe(self) -> dict:
+        """Settings that identify this judge, for verdict-file provenance.
+        Subclasses add their model id and sampling settings."""
+        return {"id": self.id, "provider": self.provider}
+
     @abstractmethod
     def _evaluate(
         self,

@@ -121,6 +121,10 @@ class TestRunner:
                 sink.write(json.dumps({"header": header}) + "\n")
 
         rows: List[dict] = []
+        # What each model actually ran with (weights file + hash, mode,
+        # context, budget), for provenance. A model skipped on resume is not
+        # loaded, so it has no entry.
+        model_details: Dict[str, dict] = {}
         with open(self.checkpoint_path, "a", encoding="utf-8") as checkpoint:
             for model_id in models:
                 keys = [
@@ -146,12 +150,14 @@ class TestRunner:
                         os.fsync(checkpoint.fileno())
                     rows.append(row)
                 _log_latency_summary(model_id, latencies)
+                describe = getattr(model, "describe", None)
+                model_details[model_id] = describe() if describe else None
 
         payload = {
             "outputs": rows,
             "provenance": provenance.collect(
                 suite_path=self.test_suite_path, models=models, n_samples=n_samples,
-                seed=seed,
+                seed=seed, gen_kwargs=gen_kwargs, model_details=model_details,
             ),
         }
         tmp_path = self.results_path + ".tmp"

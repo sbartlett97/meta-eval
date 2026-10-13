@@ -53,3 +53,92 @@ def test_collect_passes_through_extra_fields():
     data = provenance.collect(models=["a", "b"], n_samples=3)
     assert data["models"] == ["a", "b"]
     assert data["n_samples"] == 3
+
+
+# ---------------------------------------------------------------------- #
+# Extended provenance (validation gap W3)
+# ---------------------------------------------------------------------- #
+def test_collect_records_dirty_flag_and_environment():
+    p = provenance.collect()
+    assert p["harness_git_dirty"] in (True, False, None)
+    env = p["environment"]
+    assert env["python"].count(".") >= 1
+    assert "llama_cpp_python" in env["packages"] and "anthropic" in env["packages"]
+
+
+def test_git_dirty_is_none_outside_a_repo(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert provenance.git_dirty() is None
+
+
+def test_weights_info_reads_the_sha256_from_the_hf_cache_blob(tmp_path):
+    # The HF cache layout: snapshots/<rev>/<file> -> ../../blobs/<sha256>.
+    sha = "a" * 64
+    blob = tmp_path / "blobs" / sha
+    blob.parent.mkdir()
+    blob.write_bytes(b"weights")
+    snap = tmp_path / "snapshots" / "rev"
+    snap.mkdir(parents=True)
+    (snap / "m-Q4_K_M.gguf").symlink_to(blob)
+
+    info = provenance.weights_info(str(snap / "m-Q4_K_M.gguf"))
+    assert info == {"file": "m-Q4_K_M.gguf", "size_bytes": 7, "sha256": sha}
+
+
+def test_weights_info_outside_the_cache_has_no_hash(tmp_path):
+    f = tmp_path / "local.gguf"
+    f.write_bytes(b"x")
+    assert provenance.weights_info(str(f))["sha256"] is None
+    assert provenance.weights_info(None) is None
+
+
+def test_outputs_provenance_records_model_details_and_sampling(tmp_path):
+    import json
+
+    from harness.test_runner import TestRunner
+
+    class _Model:
+        def generate(self, prompt, **kwargs):
+            return "ok"
+
+        def describe(self):
+            return {"backend": "fake", "n_ctx": 8192}
+
+    class _Loader:
+        def load(self, model_id):
+            return _Model()
+
+    suite = tmp_path / "suite.json"
+    suite.write_text(json.dumps({"evals": [{"id": "t", "prompt": "p", "criteria": "c"}]}))
+    out = tmp_path / "out.json"
+    TestRunner(str(suite), _Loader(), results_path=str(out)).run_tests(
+        ["m"], gen_kwargs={"temperature": 0.5}, seed=3
+    )
+    prov = json.loads(out.read_text())["provenance"]
+    assert prov["model_details"] == {"m": {"backend": "fake", "n_ctx": 8192}}
+    assert prov["gen_kwargs"] == {"temperature": 0.5} and prov["seed"] == 3
+
+
+def test_verdict_provenance_carries_judges_prompt_hash_and_outputs_provenance(tmp_path):
+    import json
+
+    from harness.evaluator import run_evaluation
+
+    outputs = tmp_path / "o.json"
+    outputs.write_text(json.dumps({
+        "outputs": [{"test_id": "t", "model": "m", "criteria": "c", "output": "x",
+                     "sample_index": 0, "turns": ["p"]}],
+        "provenance": {"suite_sha256": "abc"},
+    }))
+    verdicts = tmp_path / "v.json"
+    run_evaluation(
+        outputs_path=str(outputs),
+        judges_config={"judges": [{"id": "heuristic-baseline", "provider": "deterministic"}]},
+        verdicts_path=str(verdicts), hardware_profile={}, meta_eval_path=None,
+    )
+    prov = json.loads(verdicts.read_text())["provenance"]
+    assert prov["outputs_provenance"] == {"suite_sha256": "abc"}
+    assert prov["judge_details"] == [
+        {"id": "heuristic-baseline", "provider": "deterministic", "refusal_votes": False}
+    ]
+    assert len(prov["judge_prompt_sha256"]) == 64

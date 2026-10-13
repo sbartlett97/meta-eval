@@ -29,7 +29,7 @@ from typing import Dict, List, Optional, Protocol
 import requests
 import yaml
 
-from harness import llamacpp_engine
+from harness import llamacpp_engine, provenance
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +79,9 @@ class OllamaModel:
     #: Ollama ``done_reason`` per turn of the most recent call ("stop" /
     #: "length"); read by TestRunner to flag truncated replies.
     last_finish_reasons: List[Optional[str]] = field(default_factory=list, repr=False)
+
+    def describe(self) -> Dict:
+        return {"backend": "ollama", "tag": self.tag, "host": self.host}
 
     def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str:
         payload = {
@@ -159,17 +162,35 @@ class LlamaCppModel:
     #: Default generation budget (serving.max_tokens). Reasoning models need
     #: far more than 512 to get past the trace to an answer.
     max_tokens: int = _DEFAULT_MAX_TOKENS
-    #: llama.cpp ``finish_reason`` per turn of the most recent call ("stop" /
-    #: "length"); read by TestRunner to flag truncated replies.
-    last_finish_reasons: List[Optional[str]] = field(default_factory=list, repr=False)
 
-    def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str:
-        engine = llamacpp_engine.get_engine(
+    def describe(self) -> Dict:
+        """Settings and the exact weights file, for outputs provenance."""
+        engine = self._engine()
+        return {
+            "backend": "llamacpp",
+            "repo_id": self.repo_id,
+            "gguf_file": self.filename,
+            "mode": self.mode,
+            "reasoning": self.reasoning,
+            "max_tokens": self.max_tokens,
+            "default_temperature": _DEFAULT_TEMPERATURE,
+            "n_ctx": self.engine_kwargs.get("n_ctx"),
+            "weights": provenance.weights_info(engine.resolved_path),
+        }
+
+    def _engine(self):
+        return llamacpp_engine.get_engine(
             repo_id=self.repo_id,
             filename=self.filename,
             additional_files=self.additional_files,
             engine_kwargs=self.engine_kwargs,
         )
+    #: llama.cpp ``finish_reason`` per turn of the most recent call ("stop" /
+    #: "length"); read by TestRunner to flag truncated replies.
+    last_finish_reasons: List[Optional[str]] = field(default_factory=list, repr=False)
+
+    def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str:
+        engine = self._engine()
         call = engine.generate if self.mode == "completion" else engine.chat
         text = call(
             prompt,
@@ -184,12 +205,7 @@ class LlamaCppModel:
     def generate_conversation(
         self, turns: List[str], system_prompt: Optional[str] = None, **kwargs
     ) -> List[str]:
-        engine = llamacpp_engine.get_engine(
-            repo_id=self.repo_id,
-            filename=self.filename,
-            additional_files=self.additional_files,
-            engine_kwargs=self.engine_kwargs,
-        )
+        engine = self._engine()
         call = engine.generate_turns if self.mode == "completion" else engine.chat_turns
         replies = call(
             turns,

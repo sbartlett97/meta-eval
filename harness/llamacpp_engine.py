@@ -290,6 +290,8 @@ class LlamaCppEngine:
     #: (one per turn): ``"stop"`` for a natural end, ``"length"`` when the
     #: reply hit ``max_tokens`` or the context window, i.e. was cut short.
     last_finish_reasons: List[Optional[str]] = field(default_factory=list, init=False, repr=False)
+    #: Path of the GGUF file that was loaded (set on first load).
+    resolved_path: Optional[str] = field(default=None, init=False, repr=False)
 
     @property
     def loaded(self) -> bool:
@@ -303,6 +305,8 @@ class LlamaCppEngine:
                 return
             _evict_to_fit(self)
             self._llm = self._construct()
+            # The file actually loaded (a gguf_file glob resolved), for provenance.
+            self.resolved_path = getattr(self._llm, "model_path", None) or self.resolved_path
             _ENGINE_CACHE.move_to_end(self.key)  # most-recently used
 
     def _construct(self) -> object:
