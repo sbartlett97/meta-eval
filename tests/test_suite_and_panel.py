@@ -120,12 +120,22 @@ def test_aggregate_majority_vote():
     assert agg["agreement"] == pytest.approx(2 / 3, abs=1e-3)
 
 
-def test_aggregate_tie_broken_by_confidence():
-    result = JudgePanel(
-        [_FixedJudge("a", "PASS", 0.6), _FixedJudge("b", "FAIL", 0.9)]
-    ).evaluate("t1", "out", "crit")
-    agg = aggregate_verdicts(result)
-    assert agg["consensus"] == "FAIL"
+def test_aggregate_tie_is_ambiguous_whatever_the_confidence():
+    # Confidence scales differ between judges, so they must not break a tie
+    # (validation gap C10). Order must not matter either.
+    for judges in (
+        [_FixedJudge("a", "PASS", 0.6), _FixedJudge("b", "FAIL", 0.9)],
+        [_FixedJudge("b", "FAIL", 0.9), _FixedJudge("a", "PASS", 0.6)],
+    ):
+        agg = aggregate_verdicts(JudgePanel(judges).evaluate("t1", "out", "crit"))
+        assert agg["consensus"] == "AMBIGUOUS"
+        assert agg["agreement"] == 0.5
+
+
+def test_aggregate_clear_majority_still_wins():
+    judges = [_FixedJudge("a", "PASS", 0.1), _FixedJudge("b", "PASS", 0.1),
+              _FixedJudge("c", "FAIL", 1.0)]
+    assert aggregate_verdicts(JudgePanel(judges).evaluate("t1", "o", "c"))["consensus"] == "PASS"
 
 
 def test_aggregate_excludes_errored_verdicts_from_the_vote():

@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import itertools
 import logging
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -180,6 +180,31 @@ def bias_by_field(rows: Iterable[Dict], field: str) -> Dict[str, Dict[str, Dict]
 # ---------------------------------------------------------------------- #
 # Repeat-sampling variance (docs/critical-assessment.md #7)
 # ---------------------------------------------------------------------- #
+def latest_per_sample(rows: Iterable[Dict]) -> List[Dict]:
+    """One row per (model, test_id, sample_index): the last one seen.
+
+    A re-judge file appended after the original repeats every
+    (model, test_id, sample_index). Without this, a 3-sample run plus its
+    re-judge looks like 6 samples, and a 3-3 tie can let the stale verdict
+    win (validation gap C10). Order of first appearance is kept.
+    """
+    latest: Dict[Tuple, Dict] = {}
+    for row in rows:
+        latest[(row.get("model"), row.get("test_id"), row.get("sample_index", 0))] = row
+    return list(latest.values())
+
+
+def majority_label(labels: Iterable[str]) -> Optional[str]:
+    """The most common label; ``"AMBIGUOUS"`` on a tie for first place (a
+    split decision is not a decision); None if there are no labels."""
+    ranked = Counter(labels).most_common()
+    if not ranked:
+        return None
+    if len(ranked) > 1 and ranked[0][1] == ranked[1][1]:
+        return "AMBIGUOUS"
+    return ranked[0][0]
+
+
 def sample_variance(rows: Iterable[Dict], verdict_source: str = "consensus") -> Dict[str, Dict]:
     """Per (model, test_id) pass-rate + standard error across repeated
     generation samples (``harness.test_runner.TestRunner.run_tests``'
@@ -192,7 +217,7 @@ def sample_variance(rows: Iterable[Dict], verdict_source: str = "consensus") -> 
     predates ``--n-samples`` -- harmless (``stderr`` is just 0), not an error.
     """
     groups: Dict[str, List[Optional[str]]] = defaultdict(list)
-    for row in rows:
+    for row in latest_per_sample(rows):
         model, test_id = row.get("model"), row.get("test_id")
         if not model or not test_id:
             continue

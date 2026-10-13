@@ -185,10 +185,12 @@ docs/critical-assessment.md  # the audit this round of fixes addresses
   behavioral-invariance diff; nothing else in the codebase does this
   automatically.
 - **Repeated sampling (`--n-samples`) tags rows with `sample_index`.**
-  `harness.compare.index_by_model` distinguishes a genuine multi-sample group
-  (distinct `sample_index` values → collapsed via majority vote) from a
-  re-judge overwrite (same `sample_index` → latest file wins) — don't collapse
-  these the same way if you touch that function. The collapse is done
+  `harness.compare.index_by_model` first keeps only the latest row per
+  (model, test_id, sample_index) (`judges.meta_eval.latest_per_sample`, so a
+  re-judge file never counts as extra samples), then collapses distinct
+  `sample_index` values via majority vote. Every tie for first place — among
+  samples (`majority_label`) or among judges (`aggregate_verdicts`) — is
+  `"AMBIGUOUS"`, never broken by order or by confidence. The collapse is done
   **per `verdict_source`**: `index_by_model(rows, verdict_source=...)` must be
   called with the same `verdict_source` you'll later pass to `compare_pair`/
   `compare_all` (the CLI does this correctly; a caller that indexes on

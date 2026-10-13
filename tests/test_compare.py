@@ -312,3 +312,36 @@ def test_compare_pair_warns_when_nothing_is_paired():
     rows = [_row("base", "t1", None), _row("variant", "t1", "PASS")]
     result = compare.compare_pair("variant", "base", compare.index_by_model(rows))
     assert result["n_paired_tests"] == 0 and "warning" in result
+
+
+# ---------------------------------------------------------------------- #
+# Re-judge duplicates and ties (validation gap C10)
+# ---------------------------------------------------------------------- #
+def _sampled(model, test_id, i, verdict):
+    row = _row(model, test_id, verdict)
+    row["sample_index"] = i
+    return row
+
+
+def test_rejudge_over_a_multi_sample_run_is_not_double_counted():
+    # Original n=3 run says FAIL twice; the later re-judge says PASS for all 3.
+    original = [_sampled("m", "t1", i, v) for i, v in enumerate(["FAIL", "FAIL", "PASS"])]
+    rejudge = [_sampled("m", "t1", i, "PASS") for i in range(3)]
+    row = compare.index_by_model(original + rejudge)["m"]["t1"]
+    assert row["consensus"]["n_samples"] == 3  # not 6
+    assert row["consensus"]["consensus"] == "PASS"  # the re-judge wins
+
+
+def test_tied_samples_are_ambiguous_regardless_of_order():
+    for order in (["PASS", "FAIL"], ["FAIL", "PASS"]):
+        rows = [_sampled("m", "t1", i, v) for i, v in enumerate(order)]
+        assert compare.index_by_model(rows)["m"]["t1"]["consensus"]["consensus"] == "AMBIGUOUS"
+
+
+def test_sample_variance_ignores_rejudge_duplicates():
+    from judges.meta_eval import sample_variance
+
+    rows = [_sampled("m", "t1", i, "FAIL") for i in range(3)]
+    rows += [_sampled("m", "t1", i, "PASS") for i in range(3)]
+    report = sample_variance(rows)["m::t1"]
+    assert report["n_samples"] == 3 and report["pass_rate"] == 1.0

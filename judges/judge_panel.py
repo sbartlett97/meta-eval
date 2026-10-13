@@ -142,10 +142,8 @@ def aggregate_verdicts(result: PanelResult) -> dict:
     n_abstained = sum(1 for v in result.verdicts if v.error is None and v.abstained)
 
     counts: Dict[str, int] = {}
-    conf: Dict[str, float] = {}
     for v in ok_verdicts:
         counts[v.verdict] = counts.get(v.verdict, 0) + 1
-        conf[v.verdict] = conf.get(v.verdict, 0.0) + v.confidence
     if not counts:
         # No judge gave a real verdict (all errored or abstained). This is
         # missing data, not a judgement: None, so downstream rates drop the
@@ -159,9 +157,13 @@ def aggregate_verdicts(result: PanelResult) -> dict:
             "n_abstained": n_abstained,
         }
 
-    # Break ties by summed confidence.
-    consensus = max(counts, key=lambda label: (counts[label], conf[label]))
-    agreement = counts[consensus] / len(ok_verdicts)
+    # A tie for first place is AMBIGUOUS. Breaking it by summed confidence
+    # would favour whichever judge reports higher confidence, and confidence
+    # scales differ between judges (validation gap C10).
+    top = max(counts.values())
+    leaders = [label for label, n in counts.items() if n == top]
+    consensus = leaders[0] if len(leaders) == 1 else "AMBIGUOUS"
+    agreement = top / len(ok_verdicts)
     return {
         "test_id": result.test_id,
         "consensus": consensus,

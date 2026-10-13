@@ -37,7 +37,17 @@ import logging
 from collections import Counter, defaultdict
 from typing import Dict, Iterable, List, Optional, Tuple
 
+import os
+import sys
+
 import yaml
+
+# Allow `python harness/compare.py` (see evaluator.py for the same pattern).
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from judges.meta_eval import latest_per_sample, majority_label  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +97,9 @@ def index_by_model(
     across samples, the exact bug this collapsing exists to prevent.
     """
     grouped: Dict[Tuple[str, str], List[Dict]] = defaultdict(list)
-    for row in rows:
+    # A re-judge repeats (model, test_id, sample_index): keep only the latest
+    # so it is not counted as extra samples.
+    for row in latest_per_sample(rows):
         model, test_id = row.get("model"), row.get("test_id")
         if model and test_id:
             grouped[(model, test_id)].append(row)
@@ -116,7 +128,7 @@ def _collapse_samples(group: List[Dict], verdict_source: str) -> Dict:
     """
     labels = [l for l in (_resolve_verdict(r, verdict_source) for r in group) if l]
     counts = Counter(labels)
-    majority = counts.most_common(1)[0][0] if counts else None
+    majority = majority_label(labels)  # a tie is AMBIGUOUS, not first-come
 
     collapsed = dict(group[0])
     collapsed["consensus"] = {
