@@ -15,6 +15,7 @@ from judges.prompts import format_judge_prompt, parse_json_from_response
 
 class GPT4Judge(Judge):
     provider = "openai"
+    credential_env = "OPENAI_API_KEY"
 
     def __init__(
         self,
@@ -35,6 +36,9 @@ class GPT4Judge(Judge):
         self.retry_backoff_s = retry_backoff_s
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self._client = None
+
+    def has_credentials(self) -> bool:
+        return bool(self._api_key)
 
     def _ensure_client(self):
         if self._client is not None:

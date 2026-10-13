@@ -30,9 +30,10 @@ judges:
   # ---- Remote judges (hosted API) -- the trusted, model-independent anchor --
   # Enabled by default: without at least one judge that cannot possibly share
   # weights with a model under test, judge-bias meta-evaluation is meaningless.
-  # Requires ANTHROPIC_API_KEY / OPENAI_API_KEY; a judge that can't authenticate
-  # fails closed to an AMBIGUOUS verdict (Judge.evaluate), it does not abort the
-  # run -- see #2.9 in the assessment for why that's still worth fixing.
+  # Requires ANTHROPIC_API_KEY / OPENAI_API_KEY (from the environment or the
+  # gitignored .env, loaded by harness/env.py). The evaluator stops before any
+  # generation or judging if an enabled judge has no key
+  # (harness.evaluator.require_credentials).
   - id: "claude-sonnet-4-6"
     provider: "anthropic"
     model: "claude-sonnet-4-6"

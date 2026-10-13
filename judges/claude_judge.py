@@ -17,6 +17,7 @@ from judges.prompts import format_judge_prompt, parse_json_from_response
 
 class ClaudeJudge(Judge):
     provider = "anthropic"
+    credential_env = "ANTHROPIC_API_KEY"
 
     def __init__(
         self,
@@ -37,6 +38,9 @@ class ClaudeJudge(Judge):
         self.retry_backoff_s = retry_backoff_s
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         self._client = None  # lazily constructed
+
+    def has_credentials(self) -> bool:
+        return bool(self._api_key)
 
     def _ensure_client(self):
         if self._client is not None:

@@ -76,3 +76,57 @@ def test_load_output_rows_accepts_object_bare_array_and_jsonl(tmp_path):
     legacy = tmp_path / "c.jsonl"
     legacy.write_text(json.dumps({"test_id": "t3"}) + "\n")
     assert _load_output_rows(str(legacy)) == [{"test_id": "t3"}]
+
+
+_WITH_CLAUDE = {
+    "judges": [
+        {"id": "heuristic-baseline", "provider": "deterministic",
+         "access": "none", "priority": 3, "enabled": True},
+        {"id": "claude-x", "provider": "anthropic", "model": "claude-x",
+         "access": "api", "priority": 1, "enabled": True},
+    ]
+}
+
+
+def test_run_evaluation_stops_when_a_judge_has_no_credentials(tmp_path, monkeypatch):
+    # A remote judge without a key would turn every one of its verdicts into an
+    # error while the run still "succeeds" -- it must stop before judging.
+    import pytest
+
+    from harness.evaluator import MissingCredentialsError
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    outputs = tmp_path / "model_outputs.json"
+    verdicts = tmp_path / "model_verdicts.json"
+    _write_outputs_json(outputs)
+
+    with pytest.raises(MissingCredentialsError, match="claude-x.*ANTHROPIC_API_KEY"):
+        run_evaluation(
+            outputs_path=str(outputs),
+            judges_config=_WITH_CLAUDE,
+            verdicts_path=str(verdicts),
+            hardware_profile={},
+            meta_eval_path=None,
+        )
+    assert not verdicts.exists()
+
+
+def test_cli_exits_nonzero_before_judging_without_credentials(tmp_path, monkeypatch):
+    import yaml
+
+    from harness import evaluator
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(evaluator, "load_env", lambda: False)  # ignore any real .env
+    judges_cfg = tmp_path / "judges.yaml"
+    judges_cfg.write_text(yaml.safe_dump(_WITH_CLAUDE))
+    outputs = tmp_path / "model_outputs.json"
+    verdicts = tmp_path / "model_verdicts.json"
+    _write_outputs_json(outputs)
+
+    rc = evaluator._cli([
+        "--outputs", str(outputs), "--judges-config", str(judges_cfg),
+        "--verdicts", str(verdicts), "--meta-eval", "", "--no-hydrate",
+    ])
+    assert rc == 2
+    assert not verdicts.exists()

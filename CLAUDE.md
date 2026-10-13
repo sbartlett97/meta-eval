@@ -201,6 +201,9 @@ loads**), `pilot`.
 ## Environment
 
 - `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` — only for the respective remote judges.
+  The CLIs load them from the gitignored `.env` (`harness/env.py`, python-dotenv;
+  variables already set in the shell win). The evaluator exits with code 2
+  before any generation or judging if an enabled judge has no key.
 - `HF_TOKEN` — for gated HF repos that hydration downloads. None of the
   shipped `config/models.yaml` / `config/judges.yaml` checkpoints are gated
   (verified live against the HuggingFace API) — only needed if you add one.

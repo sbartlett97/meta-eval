@@ -41,6 +41,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from harness import provenance
+from harness.env import load_env
 from harness.hydrate import hydrate_weights
 from harness.model_loader import ModelLoader
 from harness.test_runner import TestRunner
@@ -58,6 +59,25 @@ _JUDGE_PRESETS = {
 }
 
 
+class MissingCredentialsError(RuntimeError):
+    """An enabled judge has no API credential, so every verdict it gave would be an error."""
+
+
+def require_credentials(judges) -> None:
+    """Raise :class:`MissingCredentialsError` if any judge cannot authenticate.
+
+    Without this, a remote judge with no key fails closed to an AMBIGUOUS
+    verdict on every row and the run still exits 0 -- the panel silently loses
+    its model-independent anchor.
+    """
+    missing = [f"{j.id} (needs {j.credential_env})" for j in judges if not j.has_credentials()]
+    if missing:
+        raise MissingCredentialsError(
+            "Judge(s) without credentials: " + ", ".join(missing)
+            + ". Set the variable(s) in the environment or in .env, or disable those judges."
+        )
+
+
 def run_evaluation(
     outputs_path: str,
     judges_config: str = "config/judges.yaml",
@@ -71,6 +91,7 @@ def run_evaluation(
     judges = build_judges(
         judges_config, max_priority=max_priority, hardware_profile=hardware_profile
     )
+    require_credentials(judges)
     panel = JudgePanel(judges)
     logger.info("Judge panel: %s", [j.id for j in judges])
 
@@ -226,6 +247,20 @@ def _cli(argv: Optional[List[str]] = None) -> int:
     if args.no_judge and not args.models:
         parser.error("--no-judge only makes sense with --models (nothing to judge, "
                      "nothing to generate otherwise).")
+
+    load_env()
+    # Check judge credentials before any download or generation, so a missing
+    # key doesn't surface only after hours of generation.
+    if not args.no_judge:
+        try:
+            require_credentials(build_judges(
+                args.judges_config,
+                max_priority=_JUDGE_PRESETS[args.judges],
+                hardware_profile=args.hardware_config,
+            ))
+        except MissingCredentialsError as exc:
+            logger.error("%s", exc)
+            return 2
 
     # Hydration: pull the open-weight checkpoints THIS run needs from HF up front
     # so the first in-process llama.cpp load doesn't block mid-run on a multi-GB

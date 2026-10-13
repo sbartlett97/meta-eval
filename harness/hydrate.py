@@ -296,6 +296,9 @@ def _cli(argv: Optional[List[str]] = None) -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
+    from harness.env import load_env
+
+    load_env()  # HF_TOKEN may live in .env
     hydrate_weights(
         models_config=args.models_config,
         judges_config=args.judges_config,

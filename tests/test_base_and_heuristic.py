@@ -117,6 +117,38 @@ def test_nonretryable_error_gives_up_immediately(monkeypatch):
     assert slept == []  # and no backoff sleep either
 
 
+def test_failure_log_reports_attempts_actually_made(caplog):
+    # The give-up log must say how many attempts ran, not max_retries + 1:
+    # a NonRetryableJudgeError stops after one.
+    from judges.base import NonRetryableJudgeError
+
+    class _Misconfigured(Judge):
+        id = "misconfigured"
+        max_retries = 2
+
+        def _evaluate(self, test_id, model_output, criteria, category="uncategorized", metadata=None):
+            raise NonRetryableJudgeError("no key")
+
+    with caplog.at_level("WARNING", logger="judges.base"):
+        _Misconfigured().evaluate("t1", "out", "crit")
+    assert "after 1 attempt(s)" in caplog.text
+
+
+def test_has_credentials_reflects_api_key(monkeypatch):
+    from judges.claude_judge import ClaudeJudge
+    from judges.gpt4_judge import GPT4Judge
+    from judges.heuristic_judge import HeuristicJudge
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert not ClaudeJudge().has_credentials()
+    assert not GPT4Judge().has_credentials()
+    assert ClaudeJudge(api_key="k").has_credentials()
+    assert HeuristicJudge().has_credentials()  # needs no credential
+    assert ClaudeJudge.credential_env == "ANTHROPIC_API_KEY"
+    assert GPT4Judge.credential_env == "OPENAI_API_KEY"
+
+
 def test_remote_judges_raise_nonretryable_without_api_key(monkeypatch):
     # Real regression check: missing credentials must not trigger the retry
     # loop's sleep() calls in the shipped judges, not just a synthetic stand-in.
