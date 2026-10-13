@@ -234,6 +234,7 @@ pytest tests/test_prompts.py -k parse     # run a single test by name
 # Full run: hydrate → generate → judge (+ judge_meta_eval.json)
 python harness/evaluator.py --models gemma-4-12b --judges all
 python harness/evaluator.py --outputs results/model_outputs.json --judges cheap   # re-judge
+python harness/evaluator.py --outputs results/model_outputs.json --self-consistency 0.1   # re-grade a fixed 10% to measure judge self-agreement
 python harness/evaluator.py --outputs results/model_outputs.json --batch        # Claude grades via the Message Batches API (~half price, up to 24 h)
 python harness/evaluator.py --outputs old.json --allow-legacy   # judge a pre-fix outputs file anyway (refused by default)
 python harness/evaluator.py --models gemma-4-12b --no-judge                    # generate only

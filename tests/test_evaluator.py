@@ -335,3 +335,47 @@ def test_run_evaluation_batch_turns_on_batching_for_supporting_judges(tmp_path, 
         hardware_profile={}, meta_eval_path=None, batch=True,
     )
     assert seen == {"use_batch": True}
+
+
+def test_regrade_subset_is_stable_and_about_the_right_size():
+    from harness.evaluator import in_regrade_subset
+
+    rows = [{"model": "m", "test_id": f"t{i}", "sample_index": 0} for i in range(2000)]
+    picked = [r for r in rows if in_regrade_subset(r, 0.1)]
+    assert 140 <= len(picked) <= 260
+    assert picked == [r for r in rows if in_regrade_subset(r, 0.1)]  # same every time
+    assert not any(in_regrade_subset(r, 0.0) for r in rows)
+    assert all(in_regrade_subset(r, 1.0) for r in rows)
+
+
+def test_self_consistency_regrades_with_non_deterministic_judges_only(tmp_path, monkeypatch):
+    from judges.claude_judge import ClaudeJudge
+    from judges.heuristic_judge import HeuristicJudge
+
+    calls = []
+
+    def fake_many(self, items):
+        calls.append(len(items))
+        return HeuristicJudge().evaluate_many(items)
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setattr(ClaudeJudge, "evaluate_many", fake_many)
+    outputs, verdicts, meta = tmp_path / "o.json", tmp_path / "v.json", tmp_path / "m.json"
+    _write_outputs_json(outputs)
+    run_evaluation(
+        outputs_path=str(outputs), judges_config=_WITH_CLAUDE, verdicts_path=str(verdicts),
+        hardware_profile={}, meta_eval_path=str(meta), self_consistency=1.0,
+    )
+    assert calls == [2, 2]  # first grade, then the re-grade of both rows
+    rows = json.loads(verdicts.read_text())["verdicts"]
+    # The re-grade holds the Claude judge only (the heuristic is deterministic).
+    assert all(len(r["regrade_verdicts"]) == 1 for r in rows)
+    assert "self_consistency" in json.loads(meta.read_text())
+
+
+def test_no_regrade_by_default(tmp_path):
+    outputs, verdicts = tmp_path / "o.json", tmp_path / "v.json"
+    _write_outputs_json(outputs)
+    run_evaluation(outputs_path=str(outputs), judges_config=_HEURISTIC_ONLY,
+                   verdicts_path=str(verdicts), hardware_profile={}, meta_eval_path=None)
+    assert all("regrade_verdicts" not in r for r in json.loads(verdicts.read_text())["verdicts"])
