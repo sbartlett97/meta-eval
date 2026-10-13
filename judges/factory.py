@@ -38,7 +38,9 @@ def build_judge(entry: Dict, llamacpp_kwargs: Optional[Dict] = None) -> Judge:
     if provider == "openai":
         return GPT4Judge(model=entry.get("model", "gpt-4o"), judge_id=jid)
     if provider == "deterministic":
-        return HeuristicJudge(refusal_votes=bool(entry.get("refusal_votes", False)))
+        judge = HeuristicJudge(refusal_votes=bool(entry.get("refusal_votes", False)))
+        judge.id = jid  # the configured id, like every other judge
+        return judge
 
     spec = local_llamacpp_spec(entry)
     if spec is not None:

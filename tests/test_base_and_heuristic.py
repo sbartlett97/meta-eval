@@ -344,3 +344,11 @@ def test_factory_reads_refusal_votes():
     assert build_judge(
         {"id": "h", "provider": "deterministic", "refusal_votes": True}
     ).refusal_votes is True
+
+
+
+def test_factory_uses_the_configured_heuristic_id():
+    # Two heuristic entries (e.g. voting and advisory) must not share an id.
+    from judges.factory import build_judge
+
+    assert build_judge({"id": "heuristic-voting", "provider": "deterministic"}).id == "heuristic-voting"
