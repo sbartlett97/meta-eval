@@ -94,7 +94,7 @@ class LocalLlamaCppJudge(Judge):
 
         parsed = parse_json_from_response(text)
         return Verdict(
-            verdict=parsed.get("verdict", "AMBIGUOUS"),
+            verdict=parsed.get("verdict"),  # missing -> ValueError -> error, not AMBIGUOUS
             confidence=parsed.get("confidence", 0.0),
             judge_id=self.id,
             test_id=test_id,

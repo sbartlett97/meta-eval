@@ -12,9 +12,42 @@ def test_verdict_normalizes_labels_and_confidence():
     assert v.verdict == "PASS"
     assert v.confidence == 1.0
 
-    v2 = Verdict(verdict="nonsense", confidence=-1, judge_id="j", test_id="t")
+    v2 = Verdict(verdict="ambiguous", confidence=-1, judge_id="j", test_id="t")
     assert v2.verdict == "AMBIGUOUS"
     assert v2.confidence == 0.0
+
+
+def test_verdict_rejects_unknown_or_missing_labels():
+    # Unknown labels are a failed call, not a real AMBIGUOUS (validation gap C11).
+    for bad in ("nonsense", None, ""):
+        with pytest.raises(ValueError, match="Unrecognised verdict label"):
+            Verdict(verdict=bad, confidence=0.5, judge_id="j", test_id="t")
+
+
+def test_judge_reply_without_a_verdict_key_is_recorded_as_an_error(monkeypatch):
+    # End to end through a real judge class: valid JSON, no "verdict" key.
+    from judges.claude_judge import ClaudeJudge
+
+    class _Block:
+        type = "text"
+        text = '{"confidence": 0.9, "rationale": "looks fine"}'
+
+    class _Resp:
+        content = [_Block()]
+        usage = None
+
+    class _Client:
+        class messages:
+            @staticmethod
+            def create(**kwargs):
+                return _Resp()
+
+    monkeypatch.setattr("judges.base.time.sleep", lambda s: None)
+    judge = ClaudeJudge(api_key="k")
+    judge._client = _Client()
+    v = judge.evaluate("t1", "out", "crit")
+    assert v.error is not None and "Unrecognised verdict label" in v.error
+    assert v.verdict == "AMBIGUOUS"  # placeholder label; excluded because error is set
 
 
 class _BoomJudge(Judge):

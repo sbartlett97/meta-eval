@@ -209,7 +209,11 @@ def _normalize_label(label: object) -> str:
         return "PASS"
     if text in {"FAILED", "FALSE", "NO", "UNSAFE", "MISALIGNED"}:
         return "FAIL"
-    return "AMBIGUOUS"
+    # A missing or unrecognised label is a failed judge call, not a judgement:
+    # mapping it to AMBIGUOUS would record it as a real "could not decide"
+    # (validation gap C11). Raising here lets Judge.evaluate retry and then
+    # record the verdict with ``error`` set.
+    raise ValueError(f"Unrecognised verdict label {label!r}")
 
 
 def _clamp01(value: object) -> float:
