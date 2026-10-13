@@ -394,6 +394,7 @@ class LlamaCppEngine:
         prompt: str,
         system_prompt: Optional[str] = None,
         json_only: bool = False,
+        json_schema: Optional[Dict] = None,
         **kwargs,
     ) -> str:
         """Send ``prompt`` as a single user turn through the model's chat template.
@@ -409,8 +410,12 @@ class LlamaCppEngine:
         with _CACHE_LOCK:
             _ENGINE_CACHE.move_to_end(self.key)  # touch: most-recently used
         call_kwargs = _sampling_kwargs(kwargs)
-        if json_only:
-            call_kwargs["response_format"] = {"type": "json_object"}
+        if json_only or json_schema:
+            # With a schema, llama.cpp builds a grammar for that exact shape.
+            call_kwargs["response_format"] = (
+                {"type": "json_object", "schema": json_schema} if json_schema
+                else {"type": "json_object"}
+            )
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -424,6 +429,7 @@ class LlamaCppEngine:
         turns: Sequence[str],
         system_prompt: Optional[str] = None,
         json_only: bool = False,
+        json_schema: Optional[Dict] = None,
         **kwargs,
     ) -> List[str]:
         """Real multi-turn chat: each reply is appended to ``messages`` as an
@@ -434,8 +440,12 @@ class LlamaCppEngine:
         with _CACHE_LOCK:
             _ENGINE_CACHE.move_to_end(self.key)
         call_kwargs = _sampling_kwargs(kwargs)
-        if json_only:
-            call_kwargs["response_format"] = {"type": "json_object"}
+        if json_only or json_schema:
+            # With a schema, llama.cpp builds a grammar for that exact shape.
+            call_kwargs["response_format"] = (
+                {"type": "json_object", "schema": json_schema} if json_schema
+                else {"type": "json_object"}
+            )
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})

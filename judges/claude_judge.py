@@ -1,19 +1,33 @@
-"""Claude judge via the Anthropic API (PRD v3.1).
+"""Claude judge via the Anthropic API, grading with rubric v2 (judges/rubric.py).
 
 Reads ``ANTHROPIC_API_KEY`` from the environment. The SDK is imported lazily so
 the rest of the harness (and the test suite) works without the dependency
 installed.
+
+Request shape, for current Claude models (Sonnet 5.5 / Opus 5.5):
+
+* No ``temperature``: these models reject a non-default value with HTTP 400.
+* ``output_config.effort`` is set explicitly, and ``max_tokens`` leaves room
+  for adaptive thinking before the JSON answer.
+* ``output_config.format`` constrains the answer to the rubric's JSON schema.
+* Server-side refusal **fallbacks are deliberately OFF** (decision D4). A
+  fallback silently answers with a different model, which breaks the judge's
+  identity and the meta-evaluation. When Claude declines to grade, the verdict
+  is recorded as abstained with ``abstain_reason="judge_declined:<category>"``.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from typing import Optional
 
-from judges.items import EvalItem
+from judges import rubric
 from judges.base import Judge, NonRetryableJudgeError, Verdict
-from judges.prompts import format_judge_prompt, parse_json_from_response
+from judges.items import EvalItem
+
+DEFAULT_MODEL = "claude-sonnet-5-5"
 
 
 class ClaudeJudge(Judge):
@@ -22,11 +36,11 @@ class ClaudeJudge(Judge):
 
     def __init__(
         self,
-        model: str = "claude-sonnet-4-6",
-        judge_id: str = "claude-sonnet-4-6",
+        model: str = DEFAULT_MODEL,
+        judge_id: str = DEFAULT_MODEL,
         api_key: Optional[str] = None,
-        max_tokens: int = 256,
-        temperature: float = 0.0,
+        max_tokens: int = 4096,
+        effort: str = "low",
         max_retries: int = 2,
         retry_backoff_s: float = 1.0,
     ) -> None:
@@ -34,7 +48,7 @@ class ClaudeJudge(Judge):
         self.model = model
         self.id = judge_id
         self.max_tokens = max_tokens
-        self.temperature = temperature
+        self.effort = effort
         self.max_retries = max_retries
         self.retry_backoff_s = retry_backoff_s
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
@@ -48,7 +62,10 @@ class ClaudeJudge(Judge):
             **super().describe(),
             "model": self.model,
             "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
+            "effort": self.effort,
+            "temperature": "not sent",
+            "fallbacks": "off",
+            "rubric_version": rubric.RUBRIC_VERSION,
         }
 
     def _ensure_client(self):
@@ -66,30 +83,37 @@ class ClaudeJudge(Judge):
         return self._client
 
     def _evaluate(self, item: EvalItem) -> Verdict:
-        test_id = item.test_id
         client = self._ensure_client()
-        prompt = format_judge_prompt(test_id, item.model_output, item.criteria)
+        system, user, schema = rubric.render_prompt(item)
 
         start = time.monotonic()
         resp = client.messages.create(
             model=self.model,
             max_tokens=self.max_tokens,
-            temperature=self.temperature,
-            messages=[{"role": "user", "content": prompt}],
+            system=system,
+            messages=[{"role": "user", "content": user}],
+            output_config={
+                "format": {"type": "json_schema", "schema": schema},
+                "effort": self.effort,
+            },
         )
         latency = time.monotonic() - start
 
-        text = "".join(block.text for block in resp.content if block.type == "text")
-        tokens = getattr(getattr(resp, "usage", None), "output_tokens", None)
-        parsed = parse_json_from_response(text)
-
-        return Verdict(
-            verdict=parsed.get("verdict"),  # missing -> ValueError -> error, not AMBIGUOUS
-            confidence=parsed.get("confidence", 0.0),
-            judge_id=self.id,
-            test_id=test_id,
-            rationale=parsed.get("rationale", ""),
-            latency_s=latency,
-            tokens=tokens,
-            raw=text,
-        )
+        # Check why the turn ended before reading any content.
+        if resp.stop_reason == "refusal":
+            details = getattr(resp, "stop_details", None)
+            category = getattr(details, "category", None) or "unspecified"
+            verdict = rubric.declined_verdict(
+                self.id, item, f"judge_declined:{category}",
+                getattr(details, "explanation", None) or "",
+            )
+        elif resp.stop_reason == "max_tokens":
+            raise ValueError(
+                f"judge stopped at max_tokens={self.max_tokens} before finishing its answer"
+            )
+        else:
+            text = next((b.text for b in resp.content if b.type == "text"), "")
+            verdict = rubric.build_verdict(self.id, item, json.loads(text), raw=text)
+        verdict.latency_s = latency
+        verdict.tokens = getattr(getattr(resp, "usage", None), "output_tokens", None)
+        return verdict

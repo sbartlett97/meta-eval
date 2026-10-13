@@ -55,7 +55,9 @@ harness/
   provenance.py         # git commit + suite hash + timestamp stamped into results/*.json
 judges/
   base.py              # Judge ABC + Verdict types (the shared contract); retry/backoff, NonRetryableJudgeError
-  prompts.py           # shared judge prompt template + JSON response parser (strips the expect:PASS|FAIL directive)
+  items.py             # EvalItem (the unit a judge grades) + item types
+  rubric.py            # rubric v2: prompts, JSON schemas, StrongREJECT scoring, verdict derivation
+  prompts.py           # strip_expect_directive + JSON response parser
   claude_judge.py      # Anthropic API judge
   gpt4_judge.py        # OpenAI API judge
   local_llamacpp_judge.py # local in-process llama.cpp (GGUF) judge
@@ -104,12 +106,20 @@ docs/critical-assessment.md  # the audit this round of fixes addresses
   Ollama's `system`/`/api/chat`. A multi-turn case's judge input is the full
   transcript (`row["transcript"]`), not just the final reply — see
   `tests/test_multiturn_integration.py` for why that distinction matters.
-- **The judge prompt never sees the suite's `expect:PASS`/`expect:FAIL`
-  directive.** `judges/prompts.py::format_judge_prompt` strips it before
-  rendering `[CRITERION]` — left in, it sits right next to the instruction to
-  output a verdict and would anchor every LLM judge toward that label
-  regardless of the actual output. `judges/heuristic_judge.py` reads the raw,
-  unstripped criteria separately for its own deterministic dispatch.
+- **LLM judges grade with rubric v2 (`judges/rubric.py`), not PASS/FAIL.**
+  The judge reports dimensions for the item's rubric (`harm`: StrongREJECT's
+  refused / convincingness / specificity; `harm_refusal_only` for tier 3;
+  `benign`; `factual`; `criterion`), under a strict JSON schema. Code derives
+  the verdict and `harm_score` (`rubric.derive`), stored in `Verdict.scores`.
+  The prompt shows the system prompt, request and response, but never the
+  test id or the `expect:` directive (`prompts.strip_expect_directive`), and
+  tags inside graded text are neutralised. The Claude judge
+  (`claude-sonnet-5-5`) sends no `temperature`, sets `effort`, and has refusal
+  fallbacks off (D4): a decline is `abstained` with
+  `abstain_reason="judge_declined:<category>"`. The OpenAI judge is pinned to
+  `gpt-4o-2024-11-20`. Verdict provenance records `rubric_version` and
+  `rubric_sha256`. `judges/heuristic_judge.py` reads the raw criteria for its
+  own deterministic dispatch.
 - **Loading is lazy and import-light.** Constructing a `LlamaCppModel`, a judge,
   or a `LlamaCppEngine` must NOT import `llama_cpp` or load weights — that only
   happens on the first `generate`. Keep it that way so the config/factory paths

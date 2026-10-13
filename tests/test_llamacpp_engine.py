@@ -6,6 +6,7 @@ the engine, the model-loader/judge wiring, and the sequential-loading cap withou
 loading real weights or touching the network.
 """
 
+import json
 import sys
 import types
 
@@ -22,6 +23,22 @@ from judges.local_llamacpp_judge import LocalLlamaCppJudge
 # ---------------------------------------------------------------------- #
 # Fake llama_cpp
 # ---------------------------------------------------------------------- #
+def _answer_for(schema):
+    """A valid answer for a rubric schema: first enum value, 3 for an integer,
+    "ok" for a string."""
+    if not schema:  # plain json_only: any JSON object
+        return {"verdict": "PASS", "confidence": 0.9, "rationale": "ok"}
+    out = {}
+    for name, spec in schema["properties"].items():
+        if "enum" in spec:
+            out[name] = spec["enum"][0]
+        elif spec.get("type") == "integer":
+            out[name] = 3
+        else:
+            out[name] = "ok"
+    return out
+
+
 class _FakeLlama:
     instances = []
 
@@ -58,8 +75,8 @@ class _FakeLlama:
             "temperature": temperature,
             "response_format": response_format,
         })
-        if response_format is not None:  # JSON-constrained -> a valid verdict
-            content = '{"verdict": "PASS", "confidence": 0.9, "rationale": "ok"}'
+        if response_format is not None:  # JSON-constrained -> a valid answer for the schema
+            content = json.dumps(_answer_for(response_format.get("schema")))
         else:  # echo, so tests can assert the prompt went through the chat path
             content = f"CHAT::{messages[-1]['content']}"
         return {"choices": [{"message": {"content": content}, "finish_reason": self.finish_reason}]}
@@ -389,16 +406,21 @@ def test_llamacpp_model_generate_conversation_uses_chat_turns(fake_llama_cpp):
 def test_judge_uses_chat_template_with_json_grammar(fake_llama_cpp):
     # The judge must go through the chat template (instruct GGUFs continue raw
     # prompts instead of answering) with JSON-constrained decoding at temp 0.
-    judge = LocalLlamaCppJudge(model_id="org/j", judge_id="j", gguf_file="j.gguf")
-    verdict = judge.evaluate(EvalItem("t1", "output", "expect:refuse"))
+    from judges import rubric
 
-    assert verdict.verdict == "PASS"  # fake's JSON parsed cleanly
+    judge = LocalLlamaCppJudge(model_id="org/j", judge_id="j", gguf_file="j.gguf")
+    verdict = judge.evaluate(EvalItem("t1", "output", "expect:refuse", turns=("do X",)))
+
+    # The fake answers refused=0, specificity=convincingness=3 -> FAIL, score 0.5.
     assert verdict.error is None
+    assert verdict.verdict == "FAIL" and verdict.scores["harm_score"] == 0.5
     llm = _FakeLlama.instances[0]
     assert llm.calls == []  # never a raw completion
     (call,) = llm.chat_calls
-    assert call["response_format"] == {"type": "json_object"}
-    assert call["temperature"] == 0.0  # deterministic, like the remote judges
+    # The rubric schema becomes a grammar; the rubric system prompt is sent.
+    assert call["response_format"] == {"type": "json_object", "schema": rubric.SCHEMAS["harm"]}
+    assert call["messages"][0] == {"role": "system", "content": rubric.SYSTEM_PROMPT}
+    assert call["temperature"] == 0.0  # deterministic
 
 
 def test_batch_judging_loads_each_local_judge_once(fake_llama_cpp):

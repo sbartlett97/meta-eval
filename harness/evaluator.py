@@ -25,7 +25,6 @@ computed separately and written to ``results/judge_meta_eval.json``; see
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import logging
 import os
@@ -47,7 +46,7 @@ from harness.hydrate import hydrate_weights
 from harness.model_loader import ModelLoader
 from harness.test_runner import CheckpointMismatchError, TestRunner
 from judges.factory import build_judges
-from judges.prompts import JUDGE_PROMPT_TEMPLATE
+from judges import rubric
 from judges.judge_panel import EvalItem, JudgePanel, aggregate_verdicts
 from judges.meta_eval import meta_evaluation_report
 
@@ -173,7 +172,8 @@ def run_evaluation(
             judges_config=judges_config if isinstance(judges_config, str) else None,
             judge_panel=[j.id for j in judges],
             judge_details=[j.describe() for j in judges],
-            judge_prompt_sha256=hashlib.sha256(JUDGE_PROMPT_TEMPLATE.encode()).hexdigest(),
+            rubric_version=rubric.RUBRIC_VERSION,
+            rubric_sha256=rubric.rubric_sha256(),
             # The suite hash, models and seeds live here, so verdicts can be
             # traced back to exactly what was generated.
             outputs_provenance=outputs_provenance,
@@ -319,7 +319,7 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         type=lambda v: [x.strip() for x in v.split(",") if x.strip()],
         default=None,
         help="Comma-separated judge ids from judges.yaml (e.g. "
-        "heuristic-baseline,claude-sonnet-4-6). Overrides --judges and the "
+        "heuristic-baseline,claude-sonnet-5-5). Overrides --judges and the "
         "enabled flag.",
     )
     parser.add_argument(

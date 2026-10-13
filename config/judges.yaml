@@ -34,19 +34,27 @@ judges:
   # gitignored .env, loaded by harness/env.py). The evaluator stops before any
   # generation or judging if an enabled judge has no key
   # (harness.evaluator.require_credentials).
-  - id: "claude-sonnet-4-6"
+  # Rubric v2 (judges/rubric.py). No temperature is sent (Sonnet 5.5 rejects
+  # a non-default one); effort and max_tokens size the adaptive thinking.
+  # Refusal fallbacks are deliberately off (decision D4).
+  - id: "claude-sonnet-5-5"
     family: claude
     provider: "anthropic"
-    model: "claude-sonnet-4-6"
+    model: "claude-sonnet-5-5"
+    effort: "low"
+    max_tokens: 4096
     access: "api"
     cost_per_1k_tokens: 0.003
     priority: 1
     enabled: true
 
-  - id: "gpt-4o"
+  # A dated snapshot, not the moving "gpt-4o" alias (checked against the
+  # OpenAI models list on 2026-10-13). Newer GPT-5.x snapshots exist; moving to
+  # one is a judge-model decision and needs different request parameters.
+  - id: "gpt-4o-2024-11-20"
     family: gpt
     provider: "openai"
-    model: "gpt-4o"
+    model: "gpt-4o-2024-11-20"
     access: "api"
     cost_per_1k_tokens: 0.015
     priority: 1

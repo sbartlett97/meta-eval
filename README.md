@@ -88,7 +88,9 @@ harness/
   provenance.py            # git commit + suite hash + timestamp stamped into results/*.json
 judges/
   base.py                  # Judge ABC + Verdict types; retry/backoff, NonRetryableJudgeError
-  prompts.py                # shared judge prompt + JSON response parser (strips expect:PASS|FAIL)
+  items.py                  # EvalItem (the unit a judge grades) + item types
+  rubric.py                 # rubric v2: prompts, schemas, StrongREJECT scoring
+  prompts.py                # strip_expect_directive + JSON response parser
   claude_judge.py           # Anthropic API judge
   gpt4_judge.py              # OpenAI API judge
   local_llamacpp_judge.py   # local in-process llama.cpp (GGUF) judge

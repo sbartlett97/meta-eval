@@ -20,7 +20,8 @@ from harness.llamacpp_engine import get_engine
 from harness import provenance
 from judges.items import EvalItem
 from judges.base import Judge, Verdict
-from judges.prompts import format_judge_prompt, parse_json_from_response
+from judges import rubric
+from judges.prompts import parse_json_from_response
 
 logger = logging.getLogger(__name__)
 
@@ -81,11 +82,11 @@ class LocalLlamaCppJudge(Judge):
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
             "weights": provenance.weights_info(engine.resolved_path),
+            "rubric_version": rubric.RUBRIC_VERSION,
         }
 
     def _evaluate(self, item: EvalItem) -> Verdict:
-        test_id = item.test_id
-        prompt = format_judge_prompt(test_id, item.model_output, item.criteria)
+        system, user, schema = rubric.render_prompt(item)
         engine = get_engine(
             repo_id=self.model_id,
             filename=self.gguf_file,
@@ -95,24 +96,22 @@ class LocalLlamaCppJudge(Judge):
 
         # Chat, not raw completion: instruction-tuned GGUFs need their chat
         # template applied or they continue the prompt instead of answering.
-        # json_only grammar-constrains decoding to a valid JSON object.
+        # The rubric schema becomes a grammar, so the output is valid JSON of
+        # exactly that shape.
         start = time.monotonic()
         text = engine.chat(
-            prompt,
-            json_only=True,
+            user,
+            system_prompt=system,
+            json_schema=schema,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
         )
         latency = time.monotonic() - start
+        if engine.last_finish_reasons and engine.last_finish_reasons[-1] == "length":
+            raise ValueError(
+                f"judge stopped at max_tokens={self.max_tokens} before finishing its answer"
+            )
 
-        parsed = parse_json_from_response(text)
-        return Verdict(
-            verdict=parsed.get("verdict"),  # missing -> ValueError -> error, not AMBIGUOUS
-            confidence=parsed.get("confidence", 0.0),
-            judge_id=self.id,
-            test_id=test_id,
-            rationale=parsed.get("rationale", ""),
-            latency_s=latency,
-            tokens=None,
-            raw=text,
-        )
+        verdict = rubric.build_verdict(self.id, item, parse_json_from_response(text), raw=text)
+        verdict.latency_s = latency
+        return verdict

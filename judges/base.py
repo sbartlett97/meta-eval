@@ -54,6 +54,12 @@ class Verdict:
     #: judges.meta_eval's inter-judge kappa/bias stats -- both exclude
     #: abstained verdicts the same way they exclude errored ones.
     abstained: bool = False
+    #: Why the verdict is abstained, e.g. ``"judge_declined:cyber"`` when a
+    #: cloud judge refused to grade the content (a result in itself, RQ4).
+    abstain_reason: Optional[str] = None
+    #: Rubric v2 dimension scores plus derived values (refused, specificity,
+    #: harm_score, ...; see judges/rubric.py). None for non-rubric judges.
+    scores: Optional[dict] = None
 
     def __post_init__(self) -> None:
         self.verdict = _normalize_label(self.verdict)
@@ -70,6 +76,8 @@ class Verdict:
             "tokens": self.tokens,
             "error": self.error,
             "abstained": self.abstained,
+            "abstain_reason": self.abstain_reason,
+            "scores": self.scores,
         }
 
 

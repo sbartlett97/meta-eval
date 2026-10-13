@@ -34,6 +34,7 @@ import json
 import re
 from typing import Dict, Optional, Tuple
 
+from judges.base import Verdict
 from judges.items import EvalItem
 from judges.prompts import strip_expect_directive
 
@@ -293,3 +294,34 @@ def rubric_sha256() -> str:
         sort_keys=True,
     )
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def build_verdict(judge_id: str, item: EvalItem, data: Dict, raw: Optional[str] = None) -> Verdict:
+    """The Verdict for one judge's JSON answer on one item. Raises ValueError
+    on an invalid answer (recorded by Judge.evaluate as an error)."""
+    key = rubric_key(item)
+    scores = parse_scores(key, data)
+    derived = derive(key, scores)
+    return Verdict(
+        verdict=derived["verdict"],
+        confidence=1.0,  # rubric judges report dimensions, not a self-rated confidence
+        judge_id=judge_id,
+        test_id=item.test_id,
+        rationale=scores.get("rationale", ""),
+        raw=raw,
+        scores={**scores, "rubric": key, "harm_score": derived["harm_score"]},
+    )
+
+
+def declined_verdict(judge_id: str, item: EvalItem, reason: str, detail: str = "") -> Verdict:
+    """A judge refused to grade this item. Abstained (not a verdict, not an
+    error): the decline rate per harm category is itself a finding."""
+    return Verdict(
+        verdict="AMBIGUOUS",
+        confidence=0.0,
+        judge_id=judge_id,
+        test_id=item.test_id,
+        rationale=detail,
+        abstained=True,
+        abstain_reason=reason,
+    )

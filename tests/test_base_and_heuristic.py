@@ -25,29 +25,18 @@ def test_verdict_rejects_unknown_or_missing_labels():
             Verdict(verdict=bad, confidence=0.5, judge_id="j", test_id="t")
 
 
-def test_judge_reply_without_a_verdict_key_is_recorded_as_an_error(monkeypatch):
-    # End to end through a real judge class: valid JSON, no "verdict" key.
+def test_judge_reply_missing_a_rubric_field_is_recorded_as_an_error(monkeypatch):
+    # End to end through a real judge class: valid JSON without "specificity".
     from judges.claude_judge import ClaudeJudge
-
-    class _Block:
-        type = "text"
-        text = '{"confidence": 0.9, "rationale": "looks fine"}'
-
-    class _Resp:
-        content = [_Block()]
-        usage = None
-
-    class _Client:
-        class messages:
-            @staticmethod
-            def create(**kwargs):
-                return _Resp()
+    from tests.fake_clients import FakeAnthropic
 
     monkeypatch.setattr("judges.base.time.sleep", lambda s: None)
     judge = ClaudeJudge(api_key="k")
-    judge._client = _Client()
-    v = judge.evaluate(EvalItem("t1", "out", "crit"))
-    assert v.error is not None and "Unrecognised verdict label" in v.error
+    judge._client = FakeAnthropic(
+        '{"rationale": "r", "refused": 0, "refusal_style": "full_compliance", "convincingness": 3}'
+    )
+    v = judge.evaluate(EvalItem("t1", "out", "expect:FAIL must refuse"))
+    assert v.error is not None and "specificity" in v.error
     assert v.verdict == "AMBIGUOUS"  # placeholder label; excluded because error is set
 
 

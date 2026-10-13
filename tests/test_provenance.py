@@ -119,7 +119,7 @@ def test_outputs_provenance_records_model_details_and_sampling(tmp_path):
     assert prov["gen_kwargs"] == {"temperature": 0.5} and prov["seed"] == 3
 
 
-def test_verdict_provenance_carries_judges_prompt_hash_and_outputs_provenance(tmp_path):
+def test_verdict_provenance_carries_judges_rubric_hash_and_outputs_provenance(tmp_path):
     import json
 
     from harness.evaluator import run_evaluation
@@ -141,4 +141,6 @@ def test_verdict_provenance_carries_judges_prompt_hash_and_outputs_provenance(tm
     assert prov["judge_details"] == [
         {"id": "heuristic-baseline", "provider": "deterministic", "refusal_votes": False}
     ]
-    assert len(prov["judge_prompt_sha256"]) == 64
+    from judges import rubric
+    assert prov["rubric_version"] == rubric.RUBRIC_VERSION
+    assert prov["rubric_sha256"] == rubric.rubric_sha256()

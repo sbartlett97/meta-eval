@@ -12,8 +12,8 @@ import yaml
 
 from harness import llamacpp_engine
 from judges.base import Judge
-from judges.claude_judge import ClaudeJudge
-from judges.gpt4_judge import GPT4Judge
+from judges.claude_judge import DEFAULT_MODEL as CLAUDE_DEFAULT, ClaudeJudge
+from judges.gpt4_judge import DEFAULT_MODEL as OPENAI_DEFAULT, GPT4Judge
 from judges.heuristic_judge import HeuristicJudge
 from judges.local_llamacpp_judge import LocalLlamaCppJudge
 
@@ -34,9 +34,11 @@ def build_judge(entry: Dict, llamacpp_kwargs: Optional[Dict] = None) -> Judge:
     jid = entry["id"]
 
     if provider == "anthropic":
-        return ClaudeJudge(model=entry.get("model", "claude-sonnet-4-6"), judge_id=jid)
+        options = {k: entry[k] for k in ("max_tokens", "effort") if k in entry}
+        return ClaudeJudge(model=entry.get("model", CLAUDE_DEFAULT), judge_id=jid, **options)
     if provider == "openai":
-        return GPT4Judge(model=entry.get("model", "gpt-4o"), judge_id=jid)
+        options = {k: entry[k] for k in ("max_tokens", "temperature") if k in entry}
+        return GPT4Judge(model=entry.get("model", OPENAI_DEFAULT), judge_id=jid, **options)
     if provider == "deterministic":
         judge = HeuristicJudge(refusal_votes=bool(entry.get("refusal_votes", False)))
         judge.id = jid  # the configured id, like every other judge
