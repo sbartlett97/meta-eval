@@ -246,3 +246,14 @@ def test_resume_ignores_a_truncated_last_line(tmp_path):
 
     Runner(suite, _FakeLoader(_FakeModel()), results_path=str(out)).run_tests(["m"], resume=True)
     assert [r["test_id"] for r in _read_outputs(out)] == ["t1", "t2"]
+
+
+def test_rows_record_what_the_model_was_asked(tmp_path):
+    # Judges need the request, not only the response (validation gap C1).
+    out = tmp_path / "outputs.json"
+    runner = Runner(_write_suite(tmp_path), _FakeLoader(_FakeModel()), results_path=str(out))
+    runner.run_tests(["m"])
+    rows = _read_outputs(out)
+    assert rows[0]["turns"] == ["p1"]
+    assert rows[0]["system_prompt"] == "Be terse."
+    assert rows[1]["turns"] == ["p2"]

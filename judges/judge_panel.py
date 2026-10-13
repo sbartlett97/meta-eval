@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from judges.base import Judge, Verdict
 
@@ -34,6 +34,11 @@ class EvalItem:
     #: needs -- see judges/format_checks.py -- without a judge having to parse
     #: them back out of the English ``criteria`` prose.
     metadata: Dict[str, Any] = field(default_factory=dict)
+    #: The user turn(s) the model answered (one for a single-turn case) and
+    #: the system prompt it ran under. A judge that sees only the response
+    #: cannot tell whether it fits the request.
+    turns: Tuple[str, ...] = ()
+    system_prompt: Optional[str] = None
 
 
 @dataclass

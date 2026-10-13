@@ -168,3 +168,29 @@ def test_cli_unknown_judge_id_exits_nonzero(tmp_path, monkeypatch):
         "--verdicts", str(tmp_path / "v.json"), "--meta-eval", "", "--no-hydrate",
     ])
     assert rc == 2
+
+
+def test_run_evaluation_carries_turns_and_system_prompt_to_judges(tmp_path, monkeypatch):
+    from harness import evaluator
+    from judges.judge_panel import JudgePanel
+
+    seen = []
+    original = JudgePanel.evaluate_batch
+
+    def spy(self, items):
+        seen.extend(items)
+        return original(self, items)
+
+    monkeypatch.setattr(JudgePanel, "evaluate_batch", spy)
+    outputs = tmp_path / "model_outputs.json"
+    outputs.write_text(json.dumps({"outputs": [
+        {"test_id": "t1", "model": "m", "criteria": "c", "output": "o",
+         "turns": ["hello"], "system_prompt": "sys"},
+        {"test_id": "t2", "model": "m", "criteria": "c", "output": "o"},  # legacy row
+    ]}))
+    evaluator.run_evaluation(
+        outputs_path=str(outputs), judges_config=_HEURISTIC_ONLY,
+        verdicts_path=str(tmp_path / "v.json"), hardware_profile={}, meta_eval_path=None,
+    )
+    assert seen[0].turns == ("hello",) and seen[0].system_prompt == "sys"
+    assert seen[1].turns == () and seen[1].system_prompt is None

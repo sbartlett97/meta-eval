@@ -221,6 +221,10 @@ class TestRunner:
             "severity": test.severity,
             "source": test.source,
             "criteria": test.criteria,
+            # What the model was asked: every user turn (a single-turn case is
+            # one turn) plus the system prompt. Judges need these to grade the
+            # response in context (validation gap C1).
+            "turns": list(test.turns),
             "system_prompt": test.system_prompt,
             "metadata": test.metadata,
             "output": output,

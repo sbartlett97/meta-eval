@@ -117,6 +117,8 @@ def run_evaluation(
             criteria=row.get("criteria", ""),
             category=row.get("category", "uncategorized"),
             metadata=row.get("metadata") or {},
+            turns=tuple(row.get("turns") or ()),
+            system_prompt=row.get("system_prompt"),
         )
         for row in rows
     ]
