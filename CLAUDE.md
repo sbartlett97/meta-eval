@@ -9,53 +9,68 @@ infrastructure** (PRD v3.1). It measures how fine-tuning and quantization affect
 model safety, and evaluates the evaluators — checking whether common
 LLM-as-a-judge models are biased on safety-critical tasks.
 
-The repo is **scaffolding for review**, not a finished system. Several pieces are
-deliberately left as `[Sam]` decisions (the real 15-test suite, the substantive
-meta-evaluation methodology, on-hardware verification). Don't silently "finish"
-those; see [What's intentionally unfinished](#whats-intentionally-unfinished).
+A [critical assessment](docs/critical-assessment.md) of the original scaffold
+identified several issues that would have silently invalidated both halves of
+that goal (judges sharing weights with models under test, a criterion-leaking
+judge prompt, a dropped `system_prompt`, no lineage between fine-tuned variants
+and their base). Those have since been fixed; see
+[What was fixed](#what-was-fixed-see-docscritical-assessmentmd) below. What
+remains genuinely open is on-hardware verification and the cloud-fallback
+provider choice — both still deliberate `[Sam]` decisions.
 
 ## Pipeline at a glance
 
-Two separate passes, two files, so expensive generation is done once and can be
-re-judged:
+Three passes, three files, so expensive generation is done once, judging can be
+redone freely, and the resulting numbers can actually answer the two questions
+this harness exists for:
 
 ```
-hydrate (download the open weights this run needs from HF)
-  → generate: models under test → results/model_outputs.json   (rows under `outputs`)
-  → judge:    judge panel over outputs → results/model_verdicts.json (rows under `verdicts`)
+hydrate   (download the open weights this run needs from HF)
+  → generate:  models under test → results/model_outputs.json    (rows under `outputs`)
+  → judge:     judge panel over outputs → results/model_verdicts.json (rows under `verdicts`)
+             + results/judge_meta_eval.json (inter-judge agreement/bias — judges/meta_eval.py)
+  → compare:   harness/compare.py results/model_verdicts.json  (behavioral-invariance
+               diff between a fine-tuned/quantized variant and its base — separate,
+               on-demand step, not run automatically by evaluator.py)
 ```
 
 Hydration is scoped to the run: only the requested `--models` and the local
 judges actually selected are downloaded (`harness/hydrate.py:collect_weights`
 takes the filters; the evaluator passes them).
 
-`harness/evaluator.py` is the CLI entrypoint that ties it together.
+`harness/evaluator.py` is the CLI entrypoint that ties generate+judge together.
+`harness/compare.py` is a separate CLI, run against already-written verdict files.
 
 ## Layout
 
 ```
 harness/
-  evaluator.py        # CLI: hydrate → generate → judge
-  hydrate.py          # download open weights from HuggingFace at startup
-  llamacpp_engine.py  # in-process llama.cpp GGUF engines (sequential loading)
-  model_loader.py     # load models UNDER TEST (llamacpp / ollama / cloud)
-  test_runner.py      # run a suite against models, persist raw outputs
-  test_suite.py       # JSON suite schema + loader (cases under `evals`)
+  evaluator.py        # CLI: hydrate → generate → judge (+ writes judge_meta_eval.json)
+  compare.py           # CLI: behavioral-invariance diff between a variant and its base_model_id
+  hydrate.py           # download open weights from HuggingFace at startup
+  llamacpp_engine.py   # in-process llama.cpp GGUF engines (sequential loading, multi-turn, system_prompt)
+  model_loader.py      # load models UNDER TEST (llamacpp / ollama / cloud)
+  test_runner.py       # run a suite against models, persist raw outputs (+ --n-samples, provenance)
+  test_suite.py        # JSON suite schema + loader (cases under `evals`; turns/system_prompt/domain/...)
+  provenance.py         # git commit + suite hash + timestamp stamped into results/*.json
 judges/
-  base.py             # Judge ABC + Verdict types (the shared contract)
-  prompts.py          # shared judge prompt template + JSON response parser
-  claude_judge.py     # Anthropic API judge
-  gpt4_judge.py       # OpenAI API judge
+  base.py              # Judge ABC + Verdict types (the shared contract); retry/backoff, NonRetryableJudgeError
+  prompts.py           # shared judge prompt template + JSON response parser (strips the expect:PASS|FAIL directive)
+  claude_judge.py      # Anthropic API judge
+  gpt4_judge.py        # OpenAI API judge
   local_llamacpp_judge.py # local in-process llama.cpp (GGUF) judge
-  heuristic_judge.py  # deterministic, zero-network baseline
-  factory.py          # build judges from config/judges.yaml
-  judge_panel.py      # fan out to the panel + naive consensus (placeholder)
+  heuristic_judge.py   # deterministic judge: refusal directive + real format-adherence checks
+  format_checks.py     # deterministic JSON/CSV/sentence-count/markdown/python/sections checks
+  factory.py           # build judges from config/judges.yaml
+  judge_panel.py        # fan out to the panel + naive per-item majority-vote consensus
+  meta_eval.py          # the REAL meta-evaluation: inter-judge kappa, bias-by-slice, sample variance
 config/
-  models.yaml           # models under test (local + cloud)
-  judges.yaml           # judge panel (provider / access / priority / enabled)
-  hardware_profile.yaml # in-process llama.cpp engine kwargs + budgets
-data/test_suite_v1.json  # EXAMPLE 3-case schema only, cases under `evals` (real suite is [Sam])
+  models.yaml            # models under test (local + cloud); base_model_id / quantization lineage
+  judges.yaml             # judge panel (provider / access / priority / enabled); independent of models.yaml
+  hardware_profile.yaml   # in-process llama.cpp engine kwargs + budgets
+data/test_suite_v1.json  # the 61-case suite, cases under `evals`
 tests/                   # unit tests for the deterministic, network-free parts
+docs/critical-assessment.md  # the audit this round of fixes addresses
 ```
 
 ## Key architectural facts
@@ -71,16 +86,50 @@ tests/                   # unit tests for the deterministic, network-free parts
   `LlamaCppEngine(...)` directly; wire via `engine: llamacpp` / `access:
   llamacpp`. Needs `pip install llama-cpp-python`. (Ollama remains an alternative
   backend for models under test, over HTTP.)
+- **Judge/model independence is load-bearing, not incidental.** No `id` or
+  `checkpoint` in `config/judges.yaml` may match an entry in
+  `config/models.yaml` — a judge that shares weights with a model it's scoring
+  is self-grading, and silently invalidates any judge-bias analysis. The two
+  local judges are deliberately different checkpoints (verified live against
+  the HuggingFace API — real, ungated, instruct-tuned) from every model under
+  test. Keep this invariant when editing either config; `tests/test_compare.py`
+  and the judges config itself document why.
+- **`system_prompt` and multi-turn (`turns`) are real, not suite metadata that
+  gets silently dropped.** `TestCase` (`harness/test_suite.py`) carries both;
+  `TestRunner` sends `system_prompt` through `generate()`/`generate_conversation()`
+  down to a real `system` role message (`LlamaCppEngine.chat`/`chat_turns`) or
+  Ollama's `system`/`/api/chat`. A multi-turn case's judge input is the full
+  transcript (`row["transcript"]`), not just the final reply — see
+  `tests/test_multiturn_integration.py` for why that distinction matters.
+- **The judge prompt never sees the suite's `expect:PASS`/`expect:FAIL`
+  directive.** `judges/prompts.py::format_judge_prompt` strips it before
+  rendering `[CRITERION]` — left in, it sits right next to the instruction to
+  output a verdict and would anchor every LLM judge toward that label
+  regardless of the actual output. `judges/heuristic_judge.py` reads the raw,
+  unstripped criteria separately for its own deterministic dispatch.
 - **Loading is lazy and import-light.** Constructing a `LlamaCppModel`, a judge,
   or a `LlamaCppEngine` must NOT import `llama_cpp` or load weights — that only
   happens on the first `generate`. Keep it that way so the config/factory paths
   and the whole test suite run without llama-cpp-python installed.
 - **Every judge implements the same contract:**
-  `Judge.evaluate(test_id, model_output, criteria) -> Verdict`. The base class
-  wraps `_evaluate`, so a judge that raises becomes an `AMBIGUOUS` verdict with
-  `error` set — a single judge failure never aborts a run. Add new judges by
-  subclassing `Judge`, implementing `_evaluate`, and wiring them into
-  `judges/factory.py`.
+  `Judge.evaluate(test_id, model_output, criteria, category, metadata) -> Verdict`.
+  The base class wraps `_evaluate`, retries up to `max_retries` times (remote
+  judges default to 2; a `NonRetryableJudgeError` — missing API key,
+  uninstalled SDK — skips retrying entirely) and, on final failure, produces an
+  `AMBIGUOUS` verdict with `error` set — a judge failure never aborts a run.
+  Add new judges by subclassing `Judge`, implementing `_evaluate`, and wiring
+  them into `judges/factory.py`.
+- **`error` vs `abstained` are both "not a real verdict," excluded the same
+  way.** `error` means the judge *call* failed (network, auth, malformed
+  JSON). `abstained` means the call succeeded but the judge is *structurally
+  incapable* of assessing this criterion — `HeuristicJudge` sets it on the
+  ~22-of-61-case AMBIGUOUS it returns for factual/reasoning criteria a keyword
+  scan can't verify (see `judges/heuristic_judge.py`'s docstring). Conflating
+  either with a genuine verdict would count it as real agreement/disagreement.
+  `aggregate_verdicts` (`judges/judge_panel.py`), `judges.meta_eval._ok_verdicts`,
+  and `harness.compare._resolve_verdict` all exclude verdicts with `error` OR
+  `abstained` set — extend all three together if you add a fourth "not a real
+  verdict" case, don't patch just one.
 - **Heavy deps are imported lazily** inside the method that needs them (`anthropic`,
   `openai`, `llama_cpp`, `huggingface_hub`), each with a clear install message on
   `ImportError`. Preserve this pattern — the core `pip install -r requirements.txt`
@@ -90,6 +139,37 @@ tests/                   # unit tests for the deterministic, network-free parts
   kwargs come from `hardware_profile.yaml → llamacpp_defaults` via
   `llamacpp_engine.engine_kwargs_from_profile` (which filters to valid constructor
   keys); the resident-model cap comes from `llamacpp.max_resident`.
+- **Judge panel evaluates judge-outer, not row-outer.** `JudgePanel.evaluate_batch`
+  runs one judge over the *whole* batch of outputs before moving to the next
+  judge, so each local llama.cpp judge loads once per run instead of once per
+  row. Preserve this order in any change to `judges/judge_panel.py`.
+- **Chat vs completion.** `serving.mode: chat` (the default) sends prompts
+  through the GGUF's embedded chat template (`create_chat_completion`) — needed
+  for instruction-tuned checkpoints. Use `mode: "completion"` only for base
+  (non-instruct) checkpoints that should continue a raw prompt. Local judges
+  always use the chat path with grammar-constrained JSON decoding.
+- **Ollama models are self-managing.** A model with `serving.engine: ollama`
+  causes `harness/model_loader.py` to start the `ollama serve` daemon (if not
+  already running) and `pull` the `ollama_tag` on first use — no manual
+  `ollama pull` or server start needed. `--prefer-engine` only picks the
+  fallback for entries that don't pin `serving.engine`.
+- **`base_model_id` in `config/models.yaml` links a fine-tuned/quantized
+  variant to the entry it was derived from** — `null` where the lineage isn't
+  confidently known (don't guess; a wrong lineage claim is worse than an
+  honestly-missing one). `harness/compare.py` reads it to compute the actual
+  behavioral-invariance diff; nothing else in the codebase does this
+  automatically.
+- **Repeated sampling (`--n-samples`) tags rows with `sample_index`.**
+  `harness.compare.index_by_model` distinguishes a genuine multi-sample group
+  (distinct `sample_index` values → collapsed via majority vote) from a
+  re-judge overwrite (same `sample_index` → latest file wins) — don't collapse
+  these the same way if you touch that function. The collapse is done
+  **per `verdict_source`**: `index_by_model(rows, verdict_source=...)` must be
+  called with the same `verdict_source` you'll later pass to `compare_pair`/
+  `compare_all` (the CLI does this correctly; a caller that indexes on
+  `"consensus"` and then compares on a named judge id silently reads that
+  judge's un-aggregated sample-0 verdict instead of the majority across
+  samples).
 
 ## Common commands
 
@@ -98,23 +178,32 @@ pip install -r requirements.txt          # core deps (pure-Python; incl. hugging
 pip install llama-cpp-python             # local GGUF backend (engine/access: llamacpp)
 
 pytest                                    # run the (network-free) unit tests
+pytest tests/test_prompts.py              # run a single test file
+pytest tests/test_prompts.py -k parse     # run a single test by name
 
-# Full run: hydrate → generate → judge
-python harness/evaluator.py --models mistral-7b-4bit --judges all
+# Full run: hydrate → generate → judge (+ judge_meta_eval.json)
+python harness/evaluator.py --models gemma-4-12b --judges all
 python harness/evaluator.py --outputs results/model_outputs.json --judges cheap   # re-judge
-python harness/evaluator.py --models mistral-7b-4bit --no-judge                    # generate only
-python harness/evaluator.py --models mistral-7b-4bit --judges cheap --no-hydrate   # skip HF download
+python harness/evaluator.py --models gemma-4-12b --no-judge                    # generate only
+python harness/evaluator.py --models gemma-4-12b --judges cheap --no-hydrate   # skip HF download
+python harness/evaluator.py --models gemma-4-12b --n-samples 3                 # repeated sampling
 
 python harness/hydrate.py --dry-run       # list open weights that would be downloaded
+
+# Behavioral-invariance diff (needs both variant and base already judged)
+python harness/compare.py --verdicts results/model_verdicts.json
 ```
 
-`--judges` presets: `all` (every enabled judge), `cheap` (priority ≤ 1, remote
-API judges only), `pilot`.
+`--judges` presets: `all` (every enabled judge), `cheap` (priority ≤ 1 — the
+remote API judges and the free deterministic heuristic; **no local GGUF
+loads**), `pilot`.
 
 ## Environment
 
 - `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` — only for the respective remote judges.
-- `HF_TOKEN` — for gated HF repos that hydration downloads (e.g. Llama-2).
+- `HF_TOKEN` — for gated HF repos that hydration downloads. None of the
+  shipped `config/models.yaml` / `config/judges.yaml` checkpoints are gated
+  (verified live against the HuggingFace API) — only needed if you add one.
 - Target hardware is a MacBook Pro M5 (32GB unified memory, Apple Metal). The
   scaffold's memory/latency assumptions are unverified on real hardware.
 
@@ -125,28 +214,65 @@ API judges only), `pilot`.
 - Never hit the network or load real weights in a test. To exercise llama.cpp /
   HuggingFace wiring, inject a fake module into `sys.modules` (see
   `tests/test_llamacpp_engine.py`) and call `llamacpp_engine.reset_engines()`
-  to clear the process-wide cache between tests.
+  to clear the process-wide cache between tests. (`git_commit()` in
+  `tests/test_provenance.py` is the one exception — it's a local, network-free
+  subprocess call against this actual checkout, not a network call.)
 - Any change to `harness/`, `judges/`, or the config schema should keep `pytest`
   green and, where it adds logic, come with a network-free test.
+- A test that writes JSON via `run_evaluation`/`TestRunner.run_tests` must pass
+  explicit `tmp_path`-based paths for **every** output arg (including
+  `meta_eval_path`) — a default left unset writes into the real `results/` dir.
 
-## What's intentionally unfinished (`[Sam]`)
+## What was fixed (see docs/critical-assessment.md)
+
+The audit found the original scaffold's numbers would not have supported
+either half of the project's goal. Fixed:
+
+- **Judge/model self-judging confound** — judges no longer share checkpoints
+  with any model under test; remote judges (previously commented out) are the
+  trusted anchor.
+- **`expect:PASS`/`expect:FAIL` leaking into the LLM judge prompt** — stripped
+  before rendering; was sitting directly next to the instruction to output a
+  verdict.
+- **`system_prompt` silently dropped** — now wired end-to-end through generation.
+- **Multi-turn cases collapsed into one static prompt** — now real
+  conversations; the judge sees the full exchange.
+- **Heuristic judge's directive regex never matched the real suite** (`expect:
+  refuse`/`expect:comply` vs. the suite's actual `expect:PASS`/`expect:FAIL`) —
+  fixed, plus it now runs real deterministic checks for format-adherence.
+- **No meta-evaluation** — `judges/meta_eval.py` computes real inter-judge
+  Cohen's kappa and per-category/technique/severity bias, not just a per-item
+  majority vote.
+- **No fine-tune/quantization lineage** — `base_model_id` in
+  `config/models.yaml` + `harness/compare.py` compute the actual
+  behavioral-invariance diff.
+- **`--judges cheap` was the most expensive preset** — local judges lacked an
+  explicit `priority`, defaulting to the same tier as the (then-disabled)
+  remote judges.
+- **No retry/backoff, no error-vs-genuine-ambiguous distinction, no repeat-
+  sampling variance estimate, no result provenance** — all added; see
+  `judges/base.py`, `judges/meta_eval.py::sample_variance`, `harness/provenance.py`.
+
+## What's still intentionally unfinished (`[Sam]`)
 
 Don't quietly implement these; they're deliberate decisions:
 
-- **The real 15-test suite** — `data/test_suite_v1.json` is a 3-case schema example
-  (cases nested under `evals`).
-- **The meta-evaluation methodology** — `judges.judge_panel.aggregate_verdicts` is
-  a naive majority vote placeholder; inter-judge agreement, bias detection, and
-  reliability weighting are unbuilt.
 - **On-hardware verification** — the llama.cpp engine kwargs (`n_ctx`,
   `n_gpu_layers`), the `max_resident` cap, and the 32GB budget in
   `config/hardware_profile.yaml` are unverified on the M5.
 - **Cloud fallback** — `harness.model_loader.ReplicateModel.generate` raises
   `NotImplementedError` pending a provider + token choice.
+- **Ground-truth calibration** — there is no human-labeled gold set anywhere
+  in the repo, so no judge's *accuracy* (as opposed to inter-judge agreement)
+  can be computed. `judges/meta_eval.py` reports agreement/bias, not accuracy.
+- **Unconfirmed `base_model_id` lineage** — several `fine_tuned_models`
+  entries in `config/models.yaml` have `base_model_id: null` with a comment
+  explaining why (merge with no single base, ambiguous size-class naming,
+  etc.) — verify against the model card before filling these in, don't guess.
 
 ## Git
 
 - Work on the branch specified by the task; commit with clear messages; push with
   `git push -u origin <branch>`. Do not open a PR unless explicitly asked.
 - `results/` holds run artifacts (only `.gitkeep` is tracked); don't commit
-  generated `model_outputs.json` / `model_verdicts.json`.
+  generated `model_outputs.json` / `model_verdicts.json` / `judge_meta_eval.json`.
