@@ -1,0 +1,5 @@
+# Local GGUF backend (engine/access: llamacpp), pinned to the version the
+# harness is tested with. Kept out of requirements.txt because it compiles
+# llama.cpp at install time. For an Apple Metal build:
+#   CMAKE_ARGS="-DGGML_METAL=on" pip install -r requirements-llamacpp.txt
+llama-cpp-python==0.3.34

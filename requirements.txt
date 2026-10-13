@@ -33,7 +33,7 @@ pytest-cov>=4.1.0
 # Heavy and platform-specific, so kept out of the core install. Local models and
 # judges load their GGUF checkpoint IN-PROCESS (no server); install the backend
 # you use, separately:
-#   llama.cpp: pip install llama-cpp-python   (the local GGUF backend)
+#   llama.cpp: pip install -r requirements-llamacpp.txt   (the local GGUF backend, pinned)
 #       GGUF-native and Metal-friendly. Loads a specific quant file from an HF
 #       repo (`engine: llamacpp` / `access: llamacpp`, harness/llamacpp_engine.py)
 #       and serves models sequentially. llama-cpp-python builds its own bundled
@@ -41,9 +41,9 @@ pytest-cov>=4.1.0
 #       Metal build: CMAKE_ARGS="-DGGML_METAL=on" pip install llama-cpp-python
 #   Ollama:    brew install ollama            (or `pip install ollama`)
 
-# --- Optional: meta-evaluation / analysis stack ------------------------
-# Not imported by any current module; reserved for the meta-evaluation analysis
-# ([Sam]: inter-judge agreement, bias detection). Uncomment when that work lands:
+# --- Optional: analysis / reporting stack -------------------------------
+# judges/meta_eval.py (agreement, bias) is pure Python and needs none of these.
+# Reserved for the reporting step (todo task 4.6). Uncomment when that lands:
 # numpy>=1.24
 # pandas>=2.0
 # scikit-learn>=1.3.0

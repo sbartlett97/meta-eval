@@ -210,8 +210,12 @@ docs/critical-assessment.md  # the audit this round of fixes addresses
 ## Common commands
 
 ```bash
-pip install -r requirements.txt          # core deps (pure-Python; incl. huggingface_hub)
-pip install llama-cpp-python             # local GGUF backend (engine/access: llamacpp)
+pip install -r requirements.lock         # exact tested versions (Python 3.14; incl. llama-cpp-python)
+pip install -r requirements.txt          # or: core deps as ranges (pure-Python; incl. huggingface_hub)
+pip install -r requirements-llamacpp.txt # local GGUF backend, pinned (engine/access: llamacpp)
+# Regenerate the lock after changing requirements*.txt, from the tested venv:
+#   uv pip compile requirements.txt requirements-llamacpp.txt --python-version 3.14 \
+#     -c <(.venv/bin/pip freeze) -o requirements.lock
 
 pytest                                    # run the (network-free) unit tests
 pytest tests/test_prompts.py              # run a single test file

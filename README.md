@@ -110,6 +110,11 @@ docs/critical-assessment.md  # the audit this round of fixes addresses
 ## Setup
 
 ```bash
+# 0. Reproducible install (Python 3.14, see .python-version): the exact
+#    versions the test suite runs against, including llama-cpp-python.
+CMAKE_ARGS="-DGGML_METAL=on" pip install -r requirements.lock
+
+# Or install the loose ranges instead:
 # 1. Core install (pure-Python wheels; installs cleanly on every platform).
 #    Includes huggingface_hub, used by the startup weight-hydration step.
 pip install -r requirements.txt
@@ -119,7 +124,7 @@ pip install -r requirements.txt
 #    llama.cpp (loaded IN-PROCESS; required for any `engine: llamacpp` /
 #    `access: llamacpp` model or judge — no server to start). It builds its own
 #    bundled llama.cpp at install time; for a Metal build on Apple Silicon:
-CMAKE_ARGS="-DGGML_METAL=on" pip install llama-cpp-python
+CMAKE_ARGS="-DGGML_METAL=on" pip install -r requirements-llamacpp.txt
 #    Ollama is also supported for models under test (over HTTP, auto-managed):
 brew install ollama
 
