@@ -2,20 +2,27 @@
 
 When the harness starts we "hydrate" it: the open-weight checkpoints the run
 needs are pre-downloaded from the HuggingFace Hub into the local HF cache.
-Because generation now loads vLLM engines in-process (see
-:mod:`harness.vllm_engine`), the first ``generate`` call would otherwise block on
-a multi-gigabyte download mid-run. Hydrating up front makes that cost explicit,
-lets it happen once, and surfaces auth errors on gated repos (e.g. Llama-2)
-immediately instead of deep inside an evaluation.
+Because generation loads llama.cpp engines in-process (see
+:mod:`harness.llamacpp_engine`), the first ``generate`` call would otherwise
+block on a multi-gigabyte download mid-run. Hydrating up front makes that cost
+explicit, lets it happen once, and surfaces auth errors on gated repos (e.g.
+Llama-2) immediately instead of deep inside an evaluation.
 
-``snapshot_download`` is idempotent: already-cached repos are verified and
-skipped, so hydrating on every start is cheap after the first run.
+Downloads go through **llama-cpp-python** — :func:`llamacpp_engine.download_pretrained`
+calls the same ``Llama.from_pretrained`` path serving uses (loading the file
+``vocab_only`` and closing it), rather than calling ``huggingface_hub`` directly.
+So hydration fetches bit-for-bit the file the engine will later load, it is
+idempotent (already-cached files are reused), and a wrong ``gguf_file`` fails
+loudly here instead of mid-run.
 
 What counts as an "open weight" here: any config entry that is served locally and
 carries a HuggingFace checkpoint id — the ``local_models`` and (non-cloud)
-``fine_tuned_models`` in ``config/models.yaml`` plus the ``access: vllm`` judges
-in ``config/judges.yaml``. Cloud/API models (Anthropic, OpenAI, Replicate) have
-no local weights and are skipped.
+``fine_tuned_models`` in ``config/models.yaml`` plus the ``access: llamacpp``
+judges in ``config/judges.yaml``. Each pins the GGUF to fetch via ``gguf_file`` /
+``serving.gguf_file`` (exact file name, as in llama.cpp's ``from_pretrained``
+snippet, or a glob), optionally with ``additional_files`` (split-GGUF shards).
+Cloud/API models (Anthropic, OpenAI, Replicate) have no local weights and are
+skipped.
 
 Hydration is **scoped to the run**: :func:`collect_weights` takes filters so the
 evaluator only pulls the models it will actually generate with and the judges it
@@ -27,6 +34,7 @@ standalone ``python harness/hydrate.py`` CLI does.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional
 
@@ -40,13 +48,16 @@ _CLOUD_PROVIDERS = {"anthropic", "openai", "replicate", "api"}
 
 @dataclass(frozen=True)
 class WeightSpec:
-    """One open-weight repo to hydrate from the HuggingFace Hub."""
+    """One GGUF to hydrate via ``Llama.from_pretrained`` (llama-cpp-python)."""
 
     repo_id: str
     #: Where it came from, for logging (e.g. "local_models:mistral-7b-4bit").
     source: str
-    #: Optional HF glob(s) to restrict the download (e.g. a single GGUF quant).
-    allow_patterns: Optional[List[str]] = None
+    #: GGUF file to fetch — an exact name (preferred) or a glob. Maps to
+    #: ``from_pretrained(filename=...)``.
+    filename: Optional[str] = None
+    #: Extra files to fetch alongside ``filename`` (e.g. split-GGUF shards).
+    additional_files: tuple = ()
 
 
 def collect_weights(
@@ -91,28 +102,34 @@ def collect_weights(
             repo = entry.get("checkpoint")
             if not repo:
                 continue
+            filename, additional = _gguf_target(entry)
             _add(specs, WeightSpec(
                 repo_id=repo,
                 source=f"{group}:{entry.get('id', repo)}",
-                allow_patterns=entry.get("hf_allow_patterns"),
+                filename=filename,
+                additional_files=additional,
             ))
 
     if include_judges:
         judges = _as_dict(judges_config)
         for entry in judges.get("judges", []) or []:
-            if entry.get("access") != "vllm":
-                continue  # only in-process vLLM judges have local weights
+            if not _is_local_llamacpp(entry):
+                continue  # only local (llama.cpp) judges have weights to download
             if only_enabled_judges and not entry.get("enabled", True):
                 continue
             if judge_max_priority is not None and entry.get("priority", 1) > judge_max_priority:
                 continue
-            repo = entry.get("model")
+            # Judges accept the same entry shape as models under test, so the
+            # repo may be under `model` (flat shape) or `checkpoint` (model-style).
+            repo = entry.get("model") or entry.get("checkpoint")
             if not repo:
                 continue
+            filename, additional = _gguf_target(entry)
             _add(specs, WeightSpec(
                 repo_id=repo,
                 source=f"judges:{entry.get('id', repo)}",
-                allow_patterns=entry.get("hf_allow_patterns"),
+                filename=filename,
+                additional_files=additional,
             ))
 
     return list(specs.values())
@@ -162,18 +179,37 @@ def hydrate_weights(
     )
     if dry_run:
         for spec in specs:
-            logger.info("  [dry-run] would download %s (%s)", spec.repo_id, spec.source)
+            logger.info(
+                "  [dry-run] would download %s (%s)", _spec_target(spec), spec.source
+            )
         return [s.repo_id for s in specs]
 
-    snapshot_download = _import_snapshot_download()
+    # Imported lazily (not at module top) so `python harness/hydrate.py` works:
+    # running the file directly only puts harness/ on sys.path, and the CLI adds
+    # the project root before calling this — a top-level `from harness import ...`
+    # would fail at import time, before that fix runs.
+    from harness import llamacpp_engine
+
+    # ``from_pretrained`` authenticates via huggingface_hub's env token; make an
+    # explicit token visible to it for gated repos.
+    if token:
+        os.environ["HF_TOKEN"] = token
+
     hydrated: List[str] = []
     for spec in specs:
-        logger.info("Downloading %s (%s) ...", spec.repo_id, spec.source)
-        snapshot_download(
-            repo_id=spec.repo_id,
-            allow_patterns=spec.allow_patterns,
-            token=token,
-        )
+        logger.info("Downloading %s (%s) ...", _spec_target(spec), spec.source)
+        try:
+            llamacpp_engine.download_pretrained(
+                repo_id=spec.repo_id,
+                filename=spec.filename,
+                additional_files=spec.additional_files,
+            )
+        except Exception as exc:  # noqa: BLE001 - re-raised with actionable context
+            raise RuntimeError(
+                f"Could not hydrate {_spec_target(spec)} ({spec.source}) via "
+                f"llama-cpp-python: {exc}. Check that `gguf_file` matches a file in "
+                "the repo (the value you'd pass to from_pretrained(filename=...))."
+            ) from exc
         hydrated.append(spec.repo_id)
     logger.info("Hydration complete: %d checkpoint(s) ready.", len(hydrated))
     return hydrated
@@ -183,18 +219,44 @@ def hydrate_weights(
 # Helpers
 # ---------------------------------------------------------------------- #
 def _add(specs: "Dict[str, WeightSpec]", spec: WeightSpec) -> None:
-    specs.setdefault(spec.repo_id, spec)
+    # Key by the full target, not just the repo, so two entries pinning different
+    # files in the same repo both hydrate (but true duplicates collapse).
+    key = "::".join([
+        spec.repo_id,
+        spec.filename or "",
+        "|".join(spec.additional_files or ()),
+    ])
+    specs.setdefault(key, spec)
 
 
-def _import_snapshot_download():
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError as exc:  # pragma: no cover - env dependent
-        raise RuntimeError(
-            "huggingface_hub is required to hydrate weights "
-            "(`pip install huggingface_hub`), or pass --no-hydrate to skip it."
-        ) from exc
-    return snapshot_download
+def _is_local_llamacpp(entry: Dict) -> bool:
+    """True for a local llama.cpp judge entry, in either accepted shape.
+
+    Mirrors ``judges.factory.local_llamacpp_spec``: the flat judge shape
+    (``access: llamacpp``) or the model-style shape (``serving.engine:
+    llamacpp``) — kept local so this module stays importable standalone.
+    """
+    serving = entry.get("serving", {}) or {}
+    return entry.get("access") == "llamacpp" or serving.get("engine") == "llamacpp"
+
+
+def _gguf_target(entry: Dict):
+    """The GGUF to fetch for one config entry: ``(filename, additional_files)``.
+
+    ``filename`` is the entry's ``gguf_file`` (models: ``serving.gguf_file``) —
+    an exact name (preferred) or a glob — passed straight to
+    ``from_pretrained(filename=...)``. ``additional_files`` are extra parts to
+    fetch alongside it (e.g. split-GGUF shards).
+    """
+    serving = entry.get("serving", {}) or {}
+    gguf = entry.get("gguf_file") or serving.get("gguf_file")
+    additional = tuple(entry.get("additional_files") or serving.get("additional_files") or [])
+    return gguf, additional
+
+
+def _spec_target(spec: WeightSpec) -> str:
+    files = ", ".join([f for f in [spec.filename, *spec.additional_files] if f])
+    return f"{spec.repo_id} :: {files}" if files else spec.repo_id
 
 
 def _as_dict(value) -> Dict:

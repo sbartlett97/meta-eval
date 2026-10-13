@@ -1,21 +1,21 @@
 """Model Loader for *test* models (PRD v3.1).
 
-This loads the models being EVALUATED (not the judges). Local vLLM models are
-loaded in-process through the shared ``harness.vllm_engine`` engine cache — the
-same cache the local *judge* models use, so a shared checkpoint is loaded once.
+This loads the models being EVALUATED (not the judges). Local GGUF models are
+loaded in-process through the shared ``harness.llamacpp_engine`` engine cache —
+the same cache the local *judge* models use, so a shared GGUF is loaded once.
 
 Design (PRD "Decision 2: Test Model Loading"): a single ``ModelLoader.load()``
 returns an object exposing ``generate(prompt) -> str``, regardless of backend.
 Three backends are supported so Sam can pick without touching call sites:
 
-    * ``ollama``   -- recommended on Apple Silicon; pre-built quantized models.
-    * ``vllm``     -- **in-process** vLLM engine (``harness.vllm_engine``); the
-      checkpoint is loaded in-process and inference runs in-line, with no
-      separately-started server and no HTTP hop.
+    * ``llamacpp`` -- **in-process** llama.cpp engine (``harness.llamacpp_engine``).
+      The default local backend. GGUF-native: points at a *specific* quant file
+      inside an HF repo and loads models sequentially (one resident at a time by
+      default).
+    * ``ollama``   -- local Ollama daemon over HTTP; pre-built quantized models.
     * ``replicate``/``api`` -- cloud fallback for models too large for local.
 
-The recommended default is Ollama (PRD "Option A: Ollama-based (Recommended for
-Mac)"). BitsAndBytes runtime quantization is intentionally not used.
+BitsAndBytes runtime quantization is intentionally not used.
 """
 
 from __future__ import annotations
@@ -24,12 +24,12 @@ import logging
 import subprocess
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Protocol
+from typing import Dict, List, Optional, Protocol
 
 import requests
 import yaml
 
-from harness.vllm_engine import engine_kwargs_from_profile, get_engine
+from harness import llamacpp_engine
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,16 @@ class GenerativeModel(Protocol):
 
     id: str
 
-    def generate(self, prompt: str, **kwargs) -> str: ...
+    def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str: ...
+
+    def generate_conversation(
+        self, turns: List[str], system_prompt: Optional[str] = None, **kwargs
+    ) -> List[str]:
+        """Run ``turns`` as a real back-and-forth: turn *n* sees the model's own
+        reply to turn *n-1* in context, not just the raw text of turn *n-1*.
+        Returns one reply per turn, same length/order as ``turns``.
+        """
+        ...
 
 
 # ---------------------------------------------------------------------- #
@@ -58,41 +67,108 @@ class OllamaModel:
     host: str = "http://localhost:11434"
     timeout_s: int = _DEFAULT_TIMEOUT_S
 
-    def generate(self, prompt: str, **kwargs) -> str:
-        resp = requests.post(
-            f"{self.host}/api/generate",
-            json={
-                "model": self.tag,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "num_predict": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
-                    "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
-                },
+    def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str:
+        payload = {
+            "model": self.tag,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "num_predict": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+                "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
             },
-            timeout=self.timeout_s,
+        }
+        if system_prompt:
+            payload["system"] = system_prompt
+        resp = requests.post(
+            f"{self.host}/api/generate", json=payload, timeout=self.timeout_s
         )
         resp.raise_for_status()
         return resp.json().get("response", "")
 
+    def generate_conversation(
+        self, turns: List[str], system_prompt: Optional[str] = None, **kwargs
+    ) -> List[str]:
+        """Real multi-turn via Ollama's ``/api/chat`` (accumulates message history)."""
+        messages: List[Dict] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        options = {
+            "num_predict": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+            "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
+        }
+        replies: List[str] = []
+        for turn in turns:
+            messages.append({"role": "user", "content": turn})
+            resp = requests.post(
+                f"{self.host}/api/chat",
+                json={
+                    "model": self.tag,
+                    "messages": messages,
+                    "stream": False,
+                    "options": options,
+                },
+                timeout=self.timeout_s,
+            )
+            resp.raise_for_status()
+            reply = resp.json().get("message", {}).get("content", "")
+            messages.append({"role": "assistant", "content": reply})
+            replies.append(reply)
+        return replies
+
 
 @dataclass
-class VLLMModel:
-    """Test model served by an **in-process** vLLM engine (no separate server).
+class LlamaCppModel:
+    """Test model served by an **in-process** llama.cpp (GGUF) engine.
 
-    The checkpoint is loaded in-process via :mod:`harness.vllm_engine` and shared
-    process-wide, so ``generate`` is an in-line call — not an HTTP request to a
-    ``vllm serve`` process. ``engine_kwargs`` come from the hardware profile.
+    Pinned to one GGUF quant (``gguf_file`` glob) inside ``repo_id`` and loaded
+    in-process via :mod:`harness.llamacpp_engine`, which loads models sequentially
+    so a test model and the judges never all hold weights at once. ``engine_kwargs``
+    come from the hardware profile's ``llamacpp_defaults``.
+
+    ``mode`` controls how prompts are sent (``serving.mode`` in models.yaml):
+
+    * ``"chat"`` (default) — the prompt goes through the GGUF's embedded chat
+      template via ``create_chat_completion``. This is what instruction-tuned
+      checkpoints (``-it`` / ``-instruct``) need; a raw completion makes them
+      *continue* the prompt instead of answering it.
+    * ``"completion"`` — raw text completion, for base (non-instruct) checkpoints.
     """
 
     id: str
-    checkpoint: str
+    repo_id: str
+    filename: Optional[str] = None
+    additional_files: List[str] = field(default_factory=list)
     engine_kwargs: Dict = field(default_factory=dict)
+    mode: str = "chat"
 
-    def generate(self, prompt: str, **kwargs) -> str:
-        engine = get_engine(self.checkpoint, self.engine_kwargs)
-        return engine.generate(
+    def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str:
+        engine = llamacpp_engine.get_engine(
+            repo_id=self.repo_id,
+            filename=self.filename,
+            additional_files=self.additional_files,
+            engine_kwargs=self.engine_kwargs,
+        )
+        call = engine.generate if self.mode == "completion" else engine.chat
+        return call(
             prompt,
+            system_prompt=system_prompt,
+            max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+            temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
+        )
+
+    def generate_conversation(
+        self, turns: List[str], system_prompt: Optional[str] = None, **kwargs
+    ) -> List[str]:
+        engine = llamacpp_engine.get_engine(
+            repo_id=self.repo_id,
+            filename=self.filename,
+            additional_files=self.additional_files,
+            engine_kwargs=self.engine_kwargs,
+        )
+        call = engine.generate_turns if self.mode == "completion" else engine.chat_turns
+        return call(
+            turns,
+            system_prompt=system_prompt,
             max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
             temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
         )
@@ -109,7 +185,15 @@ class ReplicateModel:
     id: str
     model: str
 
-    def generate(self, prompt: str, **kwargs) -> str:  # pragma: no cover - needs creds
+    def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str:  # pragma: no cover - needs creds
+        raise NotImplementedError(
+            "Cloud (Replicate) generation is a scaffold. Wire up the provider SDK "
+            "and API token before use."
+        )
+
+    def generate_conversation(
+        self, turns: List[str], system_prompt: Optional[str] = None, **kwargs
+    ) -> List[str]:  # pragma: no cover - needs creds
         raise NotImplementedError(
             "Cloud (Replicate) generation is a scaffold. Wire up the provider SDK "
             "and API token before use."
@@ -124,27 +208,31 @@ class ModelLoader:
 
     Args:
         models_config: Parsed models.yaml dict, or a path to it.
-        prefer_engine: Which local backend to use for local models when the
-            config lists more than one option. ``"ollama"`` (default) or
-            ``"vllm"``.
+        prefer_engine: Local backend to use when a model entry does not name one
+            in ``serving.engine``. ``"llamacpp"`` (default) or ``"ollama"``.
         ensure_daemon: If True and using Ollama, attempt to start the daemon.
         hardware_profile: Parsed ``config/hardware_profile.yaml`` dict, or a path
-            to it. Supplies the in-process vLLM engine kwargs (``gpu_memory_
-            utilization``, ``max_model_len``, ...). Optional; sensible vLLM
+            to it. Supplies the in-process llama.cpp engine kwargs (``n_ctx`` /
+            ``n_gpu_layers`` ...) and the ``max_resident`` cap. Optional; sensible
             defaults apply when omitted.
     """
 
     def __init__(
         self,
         models_config,
-        prefer_engine: str = "ollama",
+        prefer_engine: str = "llamacpp",
         ensure_daemon: bool = True,
         hardware_profile=None,
     ) -> None:
         self.config = _as_dict(models_config)
         self.prefer_engine = prefer_engine
         self.ensure_daemon = ensure_daemon
-        self._engine_kwargs = engine_kwargs_from_profile(_as_dict(hardware_profile))
+        profile = _as_dict(hardware_profile)
+        self._llamacpp_kwargs = llamacpp_engine.engine_kwargs_from_profile(profile)
+        # Apply the resident-model cap so llama.cpp loads sequentially.
+        llamacpp_engine.set_max_resident(
+            llamacpp_engine.max_resident_from_profile(profile)
+        )
         self._cache: Dict[str, GenerativeModel] = {}
         self._index = self._build_index()
 
@@ -170,10 +258,27 @@ class ModelLoader:
         if provider in {"replicate", "anthropic", "openai"}:
             return ReplicateModel(id=model_id, model=entry.get("model", model_id))
 
+        # The model entry names its engine in ``serving.engine``; the loader's
+        # ``prefer_engine`` is only the fallback when it doesn't.
         serving = entry.get("serving", {})
-        engine = self.prefer_engine if serving else "ollama"
-        if serving.get("engine") and self.prefer_engine not in serving:
-            engine = serving["engine"]
+        engine = serving.get("engine") or self.prefer_engine
+
+        if engine == "llamacpp":
+            mode = serving.get("mode", "chat")
+            if mode not in ("chat", "completion"):
+                raise ValueError(
+                    f"Unsupported serving.mode {mode!r} for {model_id!r}: "
+                    "expected 'chat' (default; applies the chat template) or "
+                    "'completion' (raw text completion for base checkpoints)."
+                )
+            return LlamaCppModel(
+                id=model_id,
+                repo_id=entry["checkpoint"],
+                filename=serving.get("gguf_file"),
+                additional_files=list(serving.get("additional_files") or []),
+                engine_kwargs=dict(self._llamacpp_kwargs),
+                mode=mode,
+            )
 
         if engine == "ollama":
             tag = serving.get("ollama_tag") or model_id
@@ -181,13 +286,6 @@ class ModelLoader:
                 _ensure_ollama_daemon()
                 _ollama_pull(tag)
             return OllamaModel(id=model_id, tag=tag)
-
-        if engine == "vllm":
-            return VLLMModel(
-                id=model_id,
-                checkpoint=entry["checkpoint"],
-                engine_kwargs=dict(self._engine_kwargs),
-            )
 
         raise ValueError(f"Unsupported serving engine {engine!r} for {model_id!r}")
 
@@ -217,7 +315,7 @@ def _ensure_ollama_daemon(host: str = "http://localhost:11434", timeout_s: float
     except FileNotFoundError as exc:
         raise RuntimeError(
             "`ollama` not found. Install it (`brew install ollama`) or switch "
-            "prefer_engine='vllm'."
+            "prefer_engine='llamacpp'."
         ) from exc
 
     deadline = time.monotonic() + timeout_s

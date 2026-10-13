@@ -1,16 +1,15 @@
-"""Judges package: unified HTTP/API judge interface (PRD v3.1).
+"""Judges package: unified judge interface (PRD v3.1).
 
 Every judge implements the same ``Judge.evaluate(...) -> Verdict`` contract,
-whether it calls a hosted API (Claude/GPT-4), a local vLLM server, or runs a
-deterministic heuristic in-process.
+whether it calls a hosted API (Claude/GPT-4), runs a local GGUF checkpoint
+in-process via llama.cpp, or runs a deterministic heuristic in-process.
 """
 
 from judges.base import Judge, Verdict, JudgeCallRecord
 from judges.claude_judge import ClaudeJudge
 from judges.gpt4_judge import GPT4Judge
 from judges.heuristic_judge import HeuristicJudge
-from judges.llama_local_judge import LlamaLocalJudge
-from judges.mistral_local_judge import MistralLocalJudge
+from judges.local_llamacpp_judge import LocalLlamaCppJudge
 
 __all__ = [
     "Judge",
@@ -19,6 +18,5 @@ __all__ = [
     "ClaudeJudge",
     "GPT4Judge",
     "HeuristicJudge",
-    "LlamaLocalJudge",
-    "MistralLocalJudge",
+    "LocalLlamaCppJudge",
 ]

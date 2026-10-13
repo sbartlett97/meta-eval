@@ -3,60 +3,322 @@
 # Model catalogue for the behavioral-invariance eval harness (PRD v3.1).
 #
 # Two roles are represented here:
-#   * `local_models`  -- pre-quantized checkpoints served locally (vLLM / Ollama).
+#   * `local_models`  -- pre-quantized checkpoints served locally (llama.cpp / Ollama).
 #   * `remote_models` -- API-hosted models (no local serving required).
 #
 # Everything is checkpoint-driven, NOT runtime-quantization-driven: the checkpoint
 # version pins the exact behavior (see PRD "Why Pre-Quantized Checkpoints?").
 #
+# `base_model_id` / `quantization` (see docs/critical-assessment.md #1 and #7):
+# the whole point of a *behavioral-invariance* harness is measuring whether
+# fine-tuning or quantization changed behavior relative to a reference point --
+# that requires knowing what a model IS a variant OF, not just its own id.
+# `base_model_id` names another entry in this file (usually in `local_models`)
+# that a `fine_tuned_models` entry was derived from; `harness/compare.py` reads
+# it to compute the actual behavioral diff between two already-judged result
+# files. Leave `base_model_id: null` rather than guess -- a wrong lineage claim
+# is worse than an honestly-missing one; verify against the checkpoint's model
+# card before filling it in. `quantization` records the quant level actually
+# being served (usually derivable from `serving.gguf_file`) so a future entry
+# serving the *same* checkpoint at a different quant can be compared too.
+#
 # NOTE for Sam: the `fine_tuned` entries below are placeholders. Community GGUF
 # conversions are not always available for fine-tuned variants -- fall back to a
 # cloud provider (e.g. Replicate) where noted.
 
-# The `vllm` engine now loads the checkpoint IN-PROCESS (harness/vllm_engine.py):
-# no separate `vllm serve` process and no port. The `ollama` engine still talks
-# to the local Ollama daemon over HTTP. `hf_allow_patterns` (optional) narrows
-# what hydration downloads from a repo (e.g. a single GGUF quant file).
+# Serving engines:
+#   llamacpp -- DEFAULT. In-process GGUF via llama.cpp (harness/llamacpp_engine.py).
+#               Pins one GGUF file via `serving.gguf_file` and loads models
+#               sequentially (one resident at a time -- see hardware_profile.yaml
+#               `llamacpp.max_resident`).
+#   ollama   -- local Ollama daemon over HTTP (set `serving.ollama_tag`).
+#
+# `serving.gguf_file` is passed straight to Llama.from_pretrained(filename=...).
+# Prefer the EXACT file name (as in HuggingFace's "Use this model" snippet), e.g.
+#   gguf_file: "Mistral-7B-v0.3.Q4_K_M.gguf"
+# An exact name is reproducible AND makes hydration fail loudly if it's wrong,
+# instead of a glob that silently matches nothing. A glob ("*Q4_K_M.gguf") is
+# still accepted -- handy when you don't want to hardcode the full name -- and is
+# what the shipped entries below use. Either way hydration downloads only that
+# file, never the whole repo of quants. `additional_files` fetches extra parts
+# (e.g. split-GGUF shards) alongside it; `hf_allow_patterns` overrides both.
 local_models:
-  - id: "mistral-7b-4bit"
-    checkpoint: "unsloth/Mistral-7B-v0.3-GGUF"   # pre-quantized GGUF
-    quantization: "4-bit"
-    size_gb: 4.2
+  - id: "gemma-4-12b"
+    checkpoint: "unsloth/gemma-4-12b-it-GGUF"   # pre-quantized GGUF repo
+    quantization: "Q4_K_M"
+    base_model_id: null   # foundation checkpoint -- nothing to compare against
+    size_gb: 7.12
     context_tokens: 32768
+    mode: chat
     serving:
-      engine: "vllm"        # vllm (in-process) | ollama
-      ollama_tag: "mistral:7b"
+      engine: "llamacpp"              # llamacpp (in-process GGUF) | ollama
+      gguf_file: "*Q4_K_M.gguf"       # glob; or an exact name like the example above
 
-  - id: "llama-2-7b-4bit"
-    checkpoint: "unsloth/Llama-2-7b-GGUF"         # pre-quantized GGUF
+  - id: "Ornith-1.0-9B"
+    checkpoint: "deepreinforce-ai/Ornith-1.0-9B-GGUF"         # pre-quantized GGUF repo
     quantization: "4-bit"
-    size_gb: 4.1
-    context_tokens: 4096
+    base_model_id: null   # foundation checkpoint
+    size_gb: 5.63
+    context_tokens: 32768
+    mode: chat
     serving:
-      engine: "vllm"
-      ollama_tag: "llama2:7b"
+      engine: "llamacpp"
+      gguf_file: "*Q4_K_M.gguf"
+
+  # Example: an exact GGUF file name, per HuggingFace's llama.cpp snippet. This is
+  # the recommended form. Uncomment to evaluate it (BF16 ~18GB -- check memory).
+
+  - id: "qwen3.5-9b"
+    checkpoint: "unsloth/Qwen3.5-9B-GGUF"
+    quantization: "Q4_K_M"
+    base_model_id: null   # foundation checkpoint
+    context_tokens: 32768
+    mode: chat
+    serving:
+      engine: "llamacpp"
+      gguf_file: "*Q4_K_M.gguf"
+
+  - id: "llama-3.1-8b"
+    checkpoint: "unsloth/Llama-3.1-8B-Instruct-GGUF"
+    quantization: "Q4_K_M"
+    base_model_id: null   # foundation checkpoint
+    context_tokens: 32768
+    mode: chat
+    serving:
+      engine: "llamacpp"
+      gguf_file: "*Q4_K_M.gguf"
+
+  # ---- Added for the fine-tuning/quantization comparison axes -----------
+  # Verified live against the HuggingFace API (real, ungated, exact Q4_K_M
+  # filename confirmed) before being pinned here -- see
+  # docs/critical-assessment.md #1/#7 on why base_model_id linkage matters.
+
+  - id: "qwen2.5-7b-instruct"
+    checkpoint: "bartowski/Qwen2.5-7B-Instruct-GGUF"
+    quantization: "Q4_K_M"
+    base_model_id: null   # foundation checkpoint
+    size_gb: 4.68
+    context_tokens: 32768
+    mode: chat
+    serving:
+      engine: "llamacpp"
+      gguf_file: "Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+
+  - id: "qwen2.5-7b-instruct-q8"
+    checkpoint: "bartowski/Qwen2.5-7B-Instruct-GGUF"   # same repo, different quant
+    quantization: "Q8_0"
+    # Quantization-axis pair: identical weights to qwen2.5-7b-instruct, just a
+    # higher quant level -- this is the harness's only quantization-only
+    # comparison (every other base_model_id link here is a fine-tune).
+    base_model_id: "qwen2.5-7b-instruct"
+    context_tokens: 32768
+    mode: chat
+    serving:
+      engine: "llamacpp"
+      gguf_file: "Qwen2.5-7B-Instruct-Q8_0.gguf"
+
+  - id: "llama-3-8b-instruct"
+    checkpoint: "bartowski/Meta-Llama-3-8B-Instruct-GGUF"
+    quantization: "Q4_K_M"
+    base_model_id: null   # foundation checkpoint
+    size_gb: 4.92
+    context_tokens: 8192   # Llama 3 (not 3.1)'s native context is 8K
+    mode: chat
+    serving:
+      engine: "llamacpp"
+      gguf_file: "Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
+
+  - id: "llama-3-8b"
+    checkpoint: "NousResearch/Meta-Llama-3-8B-GGUF"
+    quantization: "Q4_K_M"
+    # The RAW (non-instruct) checkpoint -- confirmed via meta-llama/Meta-Llama-
+    # 3-8B's own model card: no base_model tag at all, i.e. this genuinely is
+    # a root foundation checkpoint, not "no info to link" like the null
+    # entries elsewhere in this file. Exists so openbiollm-llama3-8b below can
+    # point at its TRUE base instead of the nearby but wrong Instruct variant
+    # (see openbiollm-llama3-8b's comment).
+    base_model_id: null
+    size_gb: 4.92
+    context_tokens: 8192
+    # No chat template on a raw base checkpoint -- it continues text rather
+    # than answering it. See CLAUDE.md's "Chat vs completion" note.
+    mode: completion
+    serving:
+      engine: "llamacpp"
+      gguf_file: "Meta-Llama-3-8B-Q4_K_M.gguf"
+
+  - id: "Gemma-4-E4B-Uncensored-HauhauCS-Aggressive"
+    checkpoint: "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive"
+    quantization: "Q4_K_M"
+    # "E4B" is a different Gemma size class than gemma-4-12b (12B) above, so it
+    # is NOT assumed to share that base -- verify against the model card before
+    # setting this.
+    base_model_id: null
+    context_tokens: 32768
+    mode: chat
+    serving:
+      engine: "llamacpp"
+      gguf_file: "*Q4_K_M.gguf"
 
 # Fine-tuned variants under evaluation. GGUF may not exist -> use a cloud provider.
 fine_tuned_models:
-  - id: "qwen-coder-7b"
-    checkpoint: "Qwen/Qwen2.5-Coder-7B"
-    quantization: "none"
-    provider: "replicate"   # cloud-based; no local GGUF assumed
+  - id: "qwythos-9b"
+    checkpoint: "empero-ai/Qwythos-9B-Claude-Mythos-5-1M-GGUF"
+    quantization: "BF16"
+    # Merge of multiple upstream models ("Claude-Mythos") -- no single base to
+    # attribute; verify against the model card before setting this.
+    base_model_id: null
     context_tokens: 32768
+    mode: chat
+    serving:
+      engine: "llamacpp"
+      gguf_file: "Qwythos-9B-Claude-Mythos-5-1M-BF16.gguf"
 
-# API-hosted models. Called over HTTPS; never served locally.
-remote_models:
-  - id: "claude-sonnet-4-6"
-    provider: "anthropic"
-    model: "claude-sonnet-4-6"
-    access: "api"
+  # ---- Added for the fine-tuning/quantization comparison axes -----------
+  - id: "llama-3.1-8b-abliterated"
+    checkpoint: "bartowski/Meta-Llama-3.1-8B-Instruct-abliterated-GGUF"
+    quantization: "Q4_K_M"
+    # Confirmed via the model card chain (checked live against the
+    # HuggingFace API): bartowski's GGUF -> mlabonne/Meta-Llama-3.1-8B-
+    # Instruct-abliterated (base_model in its card metadata) ->
+    # meta-llama/Meta-Llama-3.1-8B-Instruct, the same checkpoint llama-3.1-8b
+    # serves. A safety-ablation of an existing entry -- the most directly
+    # relevant pair in this file for a *behavioral-invariance safety* harness.
+    base_model_id: "llama-3.1-8b"
+    size_gb: 4.92
+    context_tokens: 32768
+    mode: chat
+    serving:
+      engine: "llamacpp"
+      gguf_file: "Meta-Llama-3.1-8B-Instruct-abliterated-Q4_K_M.gguf"
 
-  - id: "gpt-4o"
-    provider: "openai"
-    model: "gpt-4o"
-    access: "api"
+  - id: "qwen2.5-coder-7b"
+    checkpoint: "QuantFactory/Qwen2.5-Coder-7B-GGUF"
+    quantization: "Q4_K_M"
+    # The base Coder checkpoint BEFORE instruction-tuning -- confirmed via
+    # Qwen/Qwen2.5-Coder-7B's own model card: base_model = Qwen/Qwen2.5-7B
+    # (the raw, non-instruct 7B -- NOT qwen2.5-7b-instruct above, and not an
+    # entry in this file, so left null rather than mis-link one hop too far).
+    # A code-continued-pretrain of Qwen2.5-7B, not a plain foundation
+    # checkpoint -- filed under fine_tuned_models below for that reason, even
+    # though it has nothing in this file to point base_model_id at.
+    base_model_id: null
+    size_gb: 4.68
+    context_tokens: 32768
+    mode: completion   # raw base checkpoint, no chat template
+    serving:
+      engine: "llamacpp"
+      gguf_file: "Qwen2.5-Coder-7B.Q4_K_M.gguf"
 
-  - id: "llama-3.1-70b"
-    provider: "replicate"
-    model: "meta/meta-llama-3.1-70b-instruct"
-    access: "api"           # too large for local serving on 32GB
+  - id: "qwen2.5-coder-7b-instruct"
+    checkpoint: "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF"
+    quantization: "Q4_K_M"
+    # Confirmed via its own model card: base_model = Qwen/Qwen2.5-Coder-7B,
+    # i.e. the qwen2.5-coder-7b entry above -- NOT qwen2.5-7b-instruct (a
+    # different, one-hop-too-shallow link; see qwen2.5-coder-7b's comment for
+    # why that one is null). This is level 1 of the 2-level fine-tune chain:
+    # qwen2.5-coder-7b -> qwen2.5-coder-7b-instruct -> qwen2.5-coder-7b-instruct-abliterated.
+    base_model_id: "qwen2.5-coder-7b"
+    size_gb: 4.68
+    context_tokens: 32768
+    mode: chat
+    serving:
+      engine: "llamacpp"
+      gguf_file: "qwen2.5-coder-7b-instruct-q4_k_m.gguf"
+
+  - id: "qwen2.5-coder-7b-instruct-abliterated"
+    checkpoint: "bartowski/Qwen2.5-Coder-7B-Instruct-abliterated-GGUF"
+    quantization: "Q4_K_M"
+    # Inferred from the publisher's (huihui-ai, via bartowski's GGUF) own
+    # naming convention -- no explicit base_model tag on huihui-ai's card to
+    # confirm against, unlike llama-3.1-8b-abliterated above. Level 2 of the
+    # chain: qwen2.5-coder-7b -> qwen2.5-coder-7b-instruct -> this.
+    # harness/compare.py's discover_pairs walks direct base_model_id links
+    # only (no transitive resolution), so this chain diffs as two separate
+    # pairs -- both discovered automatically by `compare.py --verdicts ...`
+    # with no --pairs needed, since each hop has its own direct link.
+    base_model_id: "qwen2.5-coder-7b-instruct"
+    size_gb: 4.68
+    context_tokens: 32768
+    mode: chat
+    serving:
+      engine: "llamacpp"
+      gguf_file: "Qwen2.5-Coder-7B-Instruct-abliterated-Q4_K_M.gguf"
+
+  - id: "openbiollm-llama3-8b"
+    checkpoint: "bartowski/OpenBioLLM-Llama3-8B-GGUF"
+    quantization: "Q4_K_M"
+    # NOT linked to llama-3-8b-instruct: its own model card
+    # (aaditya/Llama3-OpenBioLLM-8B) names the RAW, non-instruct
+    # meta-llama/Meta-Llama-3-8B as its base -- confirmed live. Points at the
+    # llama-3-8b entry (the raw checkpoint added specifically for this link),
+    # not llama-3-8b-instruct. OpenBioLLM is itself instruction-tuned
+    # (DPO/RLHF per its card) despite descending from a non-instruct base, so
+    # `mode: chat` below is still correct for serving OpenBioLLM itself.
+    base_model_id: "llama-3-8b"
+    size_gb: 4.92
+    context_tokens: 8192
+    mode: chat
+    serving:
+      engine: "llamacpp"
+      gguf_file: "OpenBioLLM-Llama3-8B-Q4_K_M.gguf"
+
+  - id: "Qwen3.5-9B-The-Defiant-Fable-Uncensored"
+    checkpoint: "DavidAU/Qwen3.5-9B-The-Defiant-Fable-Uncensored-Heretic-NEO-IMATRIX-MAX-MTP-GGUF"
+    quantization: "Q4_K_M"
+    base_model_id: "qwen3.5-9b"   # inferred from checkpoint name; verify against model card
+    context_tokens: 32768
+    mode: chat
+    serving:
+      engine: "llamacpp"
+      gguf_file: "*NEO-MAX-Q4_K_M.gguf"
+
+  - id: "Dolphin3-Cyber"
+    checkpoint: "RavichandranJ/Dolphin3-Cyber-8B-GGUF"
+    quantization: "Q4_K_M"
+    # Confirmed, not guessed: the repo's actual GGUF file is named
+    # "Dolphin3.0-Llama3.1-8B-abliterated.Q4_K_M.gguf" (checked live against
+    # the HuggingFace API), which names the base directly.
+    base_model_id: "llama-3.1-8b"
+    context_tokens: 32768
+    mode: chat
+    serving:
+      engine: "llamacpp"
+      gguf_file: "*Q4_K_M.gguf"
+
+  - id: "gemma-4-12B-agentic-fable5"
+    checkpoint: "yuxinlu1/gemma-4-12B-agentic-fable5-composer2.5-v2-3.5x-tau2-GGUF"
+    quantization: "Q4_K_M"
+    base_model_id: "gemma-4-12b"   # checkpoint name explicitly starts with the base
+    context_tokens: 32768
+    mode: chat
+    serving:
+      engine: "llamacpp"
+      gguf_file: "*Q4_K_M.gguf"
+
+  - id: "Qwopus3.5-9B-Coder"
+    checkpoint: "Jackrong/Qwopus3.5-9B-Coder-GGUF"
+    quantization: "Q4_K_M"
+    base_model_id: "qwen3.5-9b"   # inferred from checkpoint name; verify against model card
+    context_tokens: 32768
+    mode: chat
+    serving:
+      engine: "llamacpp"
+      gguf_file: "*Q4_K_M.gguf"
+#
+## API-hosted models. Called over HTTPS; never served locally.
+#remote_models:
+#  - id: "claude-sonnet-4-6"
+#    provider: "anthropic"
+#    model: "claude-sonnet-4-6"
+#    access: "api"
+#
+#  - id: "gpt-4o"
+#    provider: "openai"
+#    model: "gpt-4o"
+#    access: "api"
+#
+#  - id: "llama-3.1-70b"
+#    provider: "replicate"
+#    model: "meta/meta-llama-3.1-70b-instruct"
+#    access: "api"           # too large for local serving on 32GB
