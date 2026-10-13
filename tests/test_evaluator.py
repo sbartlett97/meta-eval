@@ -130,3 +130,41 @@ def test_cli_exits_nonzero_before_judging_without_credentials(tmp_path, monkeypa
     ])
     assert rc == 2
     assert not verdicts.exists()
+
+
+def test_cli_judge_ids_runs_only_the_named_judge(tmp_path, monkeypatch):
+    # The main use: run the free heuristic judge alone, even though the config
+    # also enables a remote judge that has no key.
+    import yaml
+
+    from harness import evaluator
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(evaluator, "load_env", lambda: False)
+    judges_cfg = tmp_path / "judges.yaml"
+    judges_cfg.write_text(yaml.safe_dump(_WITH_CLAUDE))
+    outputs = tmp_path / "model_outputs.json"
+    verdicts = tmp_path / "model_verdicts.json"
+    _write_outputs_json(outputs)
+
+    rc = evaluator._cli([
+        "--outputs", str(outputs), "--judges-config", str(judges_cfg),
+        "--judge-ids", "heuristic-baseline",
+        "--verdicts", str(verdicts), "--meta-eval", "", "--no-hydrate",
+    ])
+    assert rc == 0
+    data = json.loads(verdicts.read_text())
+    assert data["provenance"]["judge_panel"] == ["heuristic-baseline"]
+
+
+def test_cli_unknown_judge_id_exits_nonzero(tmp_path, monkeypatch):
+    from harness import evaluator
+
+    monkeypatch.setattr(evaluator, "load_env", lambda: False)
+    outputs = tmp_path / "model_outputs.json"
+    _write_outputs_json(outputs)
+    rc = evaluator._cli([
+        "--outputs", str(outputs), "--judge-ids", "no-such-judge",
+        "--verdicts", str(tmp_path / "v.json"), "--meta-eval", "", "--no-hydrate",
+    ])
+    assert rc == 2

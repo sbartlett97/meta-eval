@@ -67,6 +67,7 @@ def collect_weights(
     include_judges: bool = True,
     judge_max_priority: Optional[int] = None,
     only_enabled_judges: bool = True,
+    judge_ids: Optional[Iterable[str]] = None,
 ) -> List[WeightSpec]:
     """Collect the unique open-weight HF repos a run needs.
 
@@ -85,6 +86,9 @@ def collect_weights(
             this — mirrors the same filter :func:`judges.factory.build_judges`
             applies, so only the judges that will actually be built are hydrated.
         only_enabled_judges: Skip judges with ``enabled: false``.
+        judge_ids: Hydrate exactly these judges (overrides the two filters
+            above). Selection is :func:`judges.factory.select_judge_entries`,
+            the same function the evaluator uses to build the panel.
 
     Returns:
         De-duplicated :class:`WeightSpec` list (first source wins on the label).
@@ -111,14 +115,14 @@ def collect_weights(
             ))
 
     if include_judges:
-        judges = _as_dict(judges_config)
-        for entry in judges.get("judges", []) or []:
+        from judges.factory import select_judge_entries
+
+        selected = select_judge_entries(
+            _as_dict(judges_config), judge_max_priority, only_enabled_judges, judge_ids
+        )
+        for entry in selected:
             if not _is_local_llamacpp(entry):
                 continue  # only local (llama.cpp) judges have weights to download
-            if only_enabled_judges and not entry.get("enabled", True):
-                continue
-            if judge_max_priority is not None and entry.get("priority", 1) > judge_max_priority:
-                continue
             # Judges accept the same entry shape as models under test, so the
             # repo may be under `model` (flat shape) or `checkpoint` (model-style).
             repo = entry.get("model") or entry.get("checkpoint")
@@ -144,6 +148,7 @@ def hydrate_weights(
     include_judges: bool = True,
     judge_max_priority: Optional[int] = None,
     only_enabled_judges: bool = True,
+    judge_ids: Optional[Iterable[str]] = None,
 ) -> List[str]:
     """Download the open-weight HF checkpoints a run needs.
 
@@ -154,7 +159,7 @@ def hydrate_weights(
             ``HF_TOKEN`` / ``HUGGINGFACE_HUB_TOKEN`` env vars picked up by
             ``huggingface_hub`` when omitted.
         dry_run: If True, log what would be downloaded but do not download.
-        model_ids, include_judges, judge_max_priority, only_enabled_judges:
+        model_ids, include_judges, judge_max_priority, only_enabled_judges, judge_ids:
             Run-scoping filters forwarded to :func:`collect_weights`.
 
     Returns:
@@ -167,6 +172,7 @@ def hydrate_weights(
         include_judges=include_judges,
         judge_max_priority=judge_max_priority,
         only_enabled_judges=only_enabled_judges,
+        judge_ids=judge_ids,
     )
     if not specs:
         logger.info("Hydration: nothing to download for this run.")

@@ -86,10 +86,16 @@ def run_evaluation(
     hardware_profile: str = "config/hardware_profile.yaml",
     meta_eval_path: Optional[str] = "results/judge_meta_eval.json",
     reference_judge_id: str = "heuristic-baseline",
+    judge_ids: Optional[List[str]] = None,
 ) -> str:
-    """Judge previously-generated model outputs; write verdicts. Returns the path."""
+    """Judge previously-generated model outputs; write verdicts. Returns the path.
+
+    ``judge_ids`` selects exactly those judges and overrides ``max_priority``
+    (see ``judges.factory.select_judge_entries``).
+    """
     judges = build_judges(
-        judges_config, max_priority=max_priority, hardware_profile=hardware_profile
+        judges_config, max_priority=max_priority, hardware_profile=hardware_profile,
+        judge_ids=judge_ids,
     )
     require_credentials(judges)
     panel = JudgePanel(judges)
@@ -217,6 +223,14 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         help="Judge subset preset.",
     )
     parser.add_argument(
+        "--judge-ids",
+        type=lambda v: [x.strip() for x in v.split(",") if x.strip()],
+        default=None,
+        help="Comma-separated judge ids from judges.yaml (e.g. "
+        "heuristic-baseline,claude-sonnet-4-6). Overrides --judges and the "
+        "enabled flag.",
+    )
+    parser.add_argument(
         "--prefer-engine", default="llamacpp", choices=["llamacpp", "ollama"]
     )
     parser.add_argument(
@@ -269,8 +283,9 @@ def _cli(argv: Optional[List[str]] = None) -> int:
                 args.judges_config,
                 max_priority=_JUDGE_PRESETS[args.judges],
                 hardware_profile=args.hardware_config,
+                judge_ids=args.judge_ids,
             ))
-        except MissingCredentialsError as exc:
+        except (MissingCredentialsError, ValueError) as exc:
             logger.error("%s", exc)
             return 2
 
@@ -285,6 +300,7 @@ def _cli(argv: Optional[List[str]] = None) -> int:
             model_ids=args.models or [],
             include_judges=not args.no_judge,
             judge_max_priority=_JUDGE_PRESETS[args.judges],
+            judge_ids=args.judge_ids,
         )
 
     if args.models:
@@ -316,6 +332,7 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         hardware_profile=args.hardware_config,
         meta_eval_path=args.meta_eval or None,
         reference_judge_id=args.reference_judge,
+        judge_ids=args.judge_ids,
     )
     return 0
 

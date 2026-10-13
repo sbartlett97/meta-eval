@@ -6,7 +6,7 @@ by editing YAML (PRD "Easier scaling -- add/remove judges without code changes")
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 import yaml
 
@@ -79,11 +79,42 @@ def local_llamacpp_spec(entry: Dict) -> Optional[tuple]:
     return repo, gguf_file, additional_files
 
 
+def select_judge_entries(
+    config,
+    max_priority: int | None = None,
+    only_enabled: bool = True,
+    judge_ids: Optional[Iterable[str]] = None,
+) -> List[Dict]:
+    """The judges.yaml entries a run uses. Shared by build_judges and hydration
+    so both always agree on which judges are in the panel.
+
+    With ``judge_ids``, exactly those entries are returned, in that order, and
+    ``max_priority`` / ``only_enabled`` are ignored: naming a judge is an
+    explicit request. An unknown id raises ``ValueError``.
+    """
+    cfg = config if isinstance(config, dict) else _load(config)
+    entries = cfg.get("judges", []) or []
+    if judge_ids is not None:
+        by_id = {e.get("id"): e for e in entries}
+        unknown = [j for j in judge_ids if j not in by_id]
+        if unknown:
+            raise ValueError(
+                f"Unknown judge id(s) {unknown}; judges.yaml has {sorted(by_id)}."
+            )
+        return [by_id[j] for j in judge_ids]
+    return [
+        e for e in entries
+        if (not only_enabled or e.get("enabled", True))
+        and (max_priority is None or e.get("priority", 1) <= max_priority)
+    ]
+
+
 def build_judges(
     config,
     max_priority: int | None = None,
     only_enabled: bool = True,
     hardware_profile=None,
+    judge_ids: Optional[Iterable[str]] = None,
 ) -> List[Judge]:
     """Build all judges from a config dict or path to ``judges.yaml``.
 
@@ -94,22 +125,18 @@ def build_judges(
         only_enabled: Skip judges with ``enabled: false``.
         hardware_profile: Parsed ``config/hardware_profile.yaml`` dict, or a path
             to it. Supplies in-process llama.cpp engine kwargs for local judges.
+        judge_ids: Build exactly these judges (see ``select_judge_entries``).
     """
-    cfg = config if isinstance(config, dict) else _load(config)
     profile = (
         hardware_profile if isinstance(hardware_profile, dict) else _maybe_load(hardware_profile)
     )
     llamacpp_kwargs = llamacpp_engine.engine_kwargs_from_profile(profile)
     # Honour the sequential-loading cap for any local llama.cpp judges.
     llamacpp_engine.set_max_resident(llamacpp_engine.max_resident_from_profile(profile))
-    judges: List[Judge] = []
-    for entry in cfg.get("judges", []):
-        if only_enabled and not entry.get("enabled", True):
-            continue
-        if max_priority is not None and entry.get("priority", 1) > max_priority:
-            continue
-        judges.append(build_judge(entry, llamacpp_kwargs=llamacpp_kwargs))
-    return judges
+    return [
+        build_judge(entry, llamacpp_kwargs=llamacpp_kwargs)
+        for entry in select_judge_entries(config, max_priority, only_enabled, judge_ids)
+    ]
 
 
 def _load(path: str) -> Dict:

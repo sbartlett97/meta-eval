@@ -199,6 +199,9 @@ python harness/compare.py --verdicts results/model_verdicts.json
 `--judges` presets: `all` (every enabled judge), `cheap` (priority ≤ 1 — the
 remote API judges and the free deterministic heuristic; **no local GGUF
 loads**), `pilot`.
+`--judge-ids a,b` picks judges by id instead; it overrides the preset and the
+`enabled` flag. Selection lives in one place, `judges.factory.select_judge_entries`,
+which both the panel and hydration use.
 
 ## Environment
 
