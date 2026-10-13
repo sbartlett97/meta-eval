@@ -258,6 +258,14 @@ class ModelLoader:
         if provider in {"replicate", "anthropic", "openai"}:
             return ReplicateModel(id=model_id, model=entry.get("model", model_id))
 
+        if "mode" in entry:
+            # A top-level `mode` is never read, so a raw base model would be
+            # silently served in chat mode (validation gap C5). Fail instead.
+            raise ValueError(
+                f"{model_id!r}: put `mode` under `serving:` (serving.mode); "
+                "a top-level `mode` key is ignored."
+            )
+
         # The model entry names its engine in ``serving.engine``; the loader's
         # ``prefer_engine`` is only the fallback when it doesn't.
         serving = entry.get("serving", {})

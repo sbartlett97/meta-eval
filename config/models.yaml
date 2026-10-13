@@ -49,8 +49,8 @@ local_models:
     base_model_id: null   # foundation checkpoint -- nothing to compare against
     size_gb: 7.12
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"              # llamacpp (in-process GGUF) | ollama
       gguf_file: "*Q4_K_M.gguf"       # glob; or an exact name like the example above
 
@@ -60,8 +60,8 @@ local_models:
     base_model_id: null   # foundation checkpoint
     size_gb: 5.63
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "*Q4_K_M.gguf"
 
@@ -73,8 +73,8 @@ local_models:
     quantization: "Q4_K_M"
     base_model_id: null   # foundation checkpoint
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "*Q4_K_M.gguf"
 
@@ -83,8 +83,8 @@ local_models:
     quantization: "Q4_K_M"
     base_model_id: null   # foundation checkpoint
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "*Q4_K_M.gguf"
 
@@ -99,8 +99,8 @@ local_models:
     base_model_id: null   # foundation checkpoint
     size_gb: 4.68
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "Qwen2.5-7B-Instruct-Q4_K_M.gguf"
 
@@ -112,8 +112,8 @@ local_models:
     # comparison (every other base_model_id link here is a fine-tune).
     base_model_id: "qwen2.5-7b-instruct"
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "Qwen2.5-7B-Instruct-Q8_0.gguf"
 
@@ -123,8 +123,8 @@ local_models:
     base_model_id: null   # foundation checkpoint
     size_gb: 4.92
     context_tokens: 8192   # Llama 3 (not 3.1)'s native context is 8K
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
 
@@ -142,8 +142,8 @@ local_models:
     context_tokens: 8192
     # No chat template on a raw base checkpoint -- it continues text rather
     # than answering it. See CLAUDE.md's "Chat vs completion" note.
-    mode: completion
     serving:
+      mode: completion
       engine: "llamacpp"
       gguf_file: "Meta-Llama-3-8B-Q4_K_M.gguf"
 
@@ -155,8 +155,8 @@ local_models:
     # setting this.
     base_model_id: null
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "*Q4_K_M.gguf"
 
@@ -169,8 +169,8 @@ fine_tuned_models:
     # attribute; verify against the model card before setting this.
     base_model_id: null
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "Qwythos-9B-Claude-Mythos-5-1M-BF16.gguf"
 
@@ -187,8 +187,8 @@ fine_tuned_models:
     base_model_id: "llama-3.1-8b"
     size_gb: 4.92
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "Meta-Llama-3.1-8B-Instruct-abliterated-Q4_K_M.gguf"
 
@@ -205,8 +205,8 @@ fine_tuned_models:
     base_model_id: null
     size_gb: 4.68
     context_tokens: 32768
-    mode: completion   # raw base checkpoint, no chat template
     serving:
+      mode: completion   # raw base checkpoint, no chat template
       engine: "llamacpp"
       gguf_file: "Qwen2.5-Coder-7B.Q4_K_M.gguf"
 
@@ -221,8 +221,8 @@ fine_tuned_models:
     base_model_id: "qwen2.5-coder-7b"
     size_gb: 4.68
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "qwen2.5-coder-7b-instruct-q4_k_m.gguf"
 
@@ -240,8 +240,8 @@ fine_tuned_models:
     base_model_id: "qwen2.5-coder-7b-instruct"
     size_gb: 4.68
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "Qwen2.5-Coder-7B-Instruct-abliterated-Q4_K_M.gguf"
 
@@ -258,8 +258,8 @@ fine_tuned_models:
     base_model_id: "llama-3-8b"
     size_gb: 4.92
     context_tokens: 8192
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "OpenBioLLM-Llama3-8B-Q4_K_M.gguf"
 
@@ -268,8 +268,8 @@ fine_tuned_models:
     quantization: "Q4_K_M"
     base_model_id: "qwen3.5-9b"   # inferred from checkpoint name; verify against model card
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "*NEO-MAX-Q4_K_M.gguf"
 
@@ -281,8 +281,8 @@ fine_tuned_models:
     # the HuggingFace API), which names the base directly.
     base_model_id: "llama-3.1-8b"
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "*Q4_K_M.gguf"
 
@@ -291,8 +291,8 @@ fine_tuned_models:
     quantization: "Q4_K_M"
     base_model_id: "gemma-4-12b"   # checkpoint name explicitly starts with the base
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "*Q4_K_M.gguf"
 
@@ -301,8 +301,8 @@ fine_tuned_models:
     quantization: "Q4_K_M"
     base_model_id: "qwen3.5-9b"   # inferred from checkpoint name; verify against model card
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "*Q4_K_M.gguf"
 #
