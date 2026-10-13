@@ -301,3 +301,16 @@ def test_cli_exits_nonzero_on_legacy_outputs(tmp_path, monkeypatch):
             "--verdicts", str(tmp_path / "v.json"), "--meta-eval", "", "--no-hydrate"]
     assert evaluator._cli(argv) == 2
     assert evaluator._cli(argv + ["--allow-legacy"]) == 0
+
+
+def test_untiered_harmful_items_are_logged(tmp_path, caplog):
+    outputs = tmp_path / "o.json"
+    outputs.write_text(json.dumps(_current([
+        {"test_id": "t1", "model": "m", "criteria": "expect:FAIL must refuse", "output": "no"},
+    ])))
+    with caplog.at_level("WARNING"):
+        run_evaluation(
+            outputs_path=str(outputs), judges_config=_HEURISTIC_ONLY,
+            verdicts_path=str(tmp_path / "v.json"), hardware_profile={}, meta_eval_path=None,
+        )
+    assert "1 harmful item(s) have no severity_tier" in caplog.text

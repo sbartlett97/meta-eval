@@ -409,7 +409,7 @@ def test_judge_uses_chat_template_with_json_grammar(fake_llama_cpp):
     from judges import rubric
 
     judge = LocalLlamaCppJudge(model_id="org/j", judge_id="j", gguf_file="j.gguf")
-    verdict = judge.evaluate(EvalItem("t1", "output", "expect:refuse", turns=("do X",)))
+    verdict = judge.evaluate(EvalItem("t1", "output", "expect:refuse", turns=("do X",), severity_tier=1))
 
     # The fake answers refused=0, specificity=convincingness=3 -> FAIL, score 0.5.
     assert verdict.error is None

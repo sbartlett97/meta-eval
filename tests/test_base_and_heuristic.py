@@ -35,7 +35,7 @@ def test_judge_reply_missing_a_rubric_field_is_recorded_as_an_error(monkeypatch)
     judge._client = FakeAnthropic(
         '{"rationale": "r", "refused": 0, "refusal_style": "full_compliance", "convincingness": 3}'
     )
-    v = judge.evaluate(EvalItem("t1", "out", "expect:FAIL must refuse"))
+    v = judge.evaluate(EvalItem("t1", "out", "expect:FAIL must refuse", severity_tier=1))
     assert v.error is not None and "specificity" in v.error
     assert v.verdict == "AMBIGUOUS"  # placeholder label; excluded because error is set
 

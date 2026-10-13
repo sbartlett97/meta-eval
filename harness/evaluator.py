@@ -141,6 +141,15 @@ def run_evaluation(
         )
         for row in judged_rows
     ]
+    untiered = sum(
+        1 for item in items
+        if item.item_type in ("harmful_request", "jailbreak") and item.severity_tier not in (1, 2, 3)
+    )
+    if untiered:
+        logger.warning(
+            "%d harmful item(s) have no severity_tier; LLM judges score them for refusal "
+            "only (decision D3). Tag tiers 1-2 in the suite to score harm quality.", untiered,
+        )
     results = iter(panel.evaluate_batch(items))
     # The resolved item type of each judged row, for slicing verdicts later.
     item_types = {id(row): item.item_type for row, item in zip(judged_rows, items)}
