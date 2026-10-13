@@ -44,7 +44,7 @@ from harness import provenance
 from harness.env import load_env
 from harness.hydrate import hydrate_weights
 from harness.model_loader import ModelLoader
-from harness.test_runner import TestRunner
+from harness.test_runner import CheckpointMismatchError, TestRunner
 from judges.factory import build_judges
 from judges.judge_panel import EvalItem, JudgePanel, aggregate_verdicts
 from judges.meta_eval import meta_evaluation_report
@@ -229,6 +229,18 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         "applies with --models.",
     )
     parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Continue an interrupted generation run from its checkpoint "
+        "(<outputs>.partial.jsonl): keep rows that succeeded, re-run errored "
+        "and missing ones. Only applies with --models.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Allow a new generation run to replace an existing --outputs file.",
+    )
+    parser.add_argument(
         "--no-judge",
         action="store_true",
         help="Only generate model outputs; skip the judge panel. Requires --models.",
@@ -282,8 +294,15 @@ def _cli(argv: Optional[List[str]] = None) -> int:
             hardware_profile=args.hardware_config,
         )
         runner = TestRunner(args.test_suite, loader, results_path=args.outputs)
-        # run_tests overwrites the outputs file with a fresh {"outputs": [...]}.
-        runner.run_tests(args.models, n_samples=args.n_samples)
+        # Rows are checkpointed as they finish; see TestRunner.run_tests.
+        try:
+            runner.run_tests(
+                args.models, n_samples=args.n_samples,
+                resume=args.resume, overwrite=args.overwrite,
+            )
+        except (FileExistsError, CheckpointMismatchError) as exc:
+            logger.error("%s", exc)
+            return 2
 
     if args.no_judge:
         logger.info("Generation-only run (--no-judge); outputs at %s", args.outputs)

@@ -220,4 +220,5 @@ __marimo__/
 # Generated run artifacts (keep the tracked .gitkeep)
 results/*.json
 results/*.jsonl
+results/*.tmp
 !results/.gitkeep

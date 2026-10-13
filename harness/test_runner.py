@@ -9,6 +9,10 @@ Outputs are written to ``results/model_outputs.json`` as a single object with th
 rows (one per test/model) nested under ``outputs``. Each row carries the
 wall-clock generation time (``latency_s``); per-generation and per-model timing
 summaries are also logged as the run proceeds.
+
+While a run is in progress, each row is also appended to
+``<results_path>.partial.jsonl`` so a crash loses at most one row; see
+``TestRunner.run_tests`` for resume and overwrite rules.
 """
 
 from __future__ import annotations
@@ -17,12 +21,16 @@ import json
 import logging
 import os
 import time
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from harness import provenance
 from harness.test_suite import TestCase, load_test_suite
 
 logger = logging.getLogger(__name__)
+
+
+class CheckpointMismatchError(ValueError):
+    """A resume checkpoint was written for a different suite or ``n_samples``."""
 
 
 class TestRunner:
@@ -44,17 +52,34 @@ class TestRunner:
         self.model_loader = model_loader
         self.results_path = results_path
 
+    @property
+    def checkpoint_path(self) -> str:
+        """Append-only JSONL checkpoint written while a run is in progress."""
+        return self.results_path + ".partial.jsonl"
+
     def run_tests(
         self,
         models: Iterable[str],
         gen_kwargs: Optional[dict] = None,
         n_samples: int = 1,
+        resume: bool = False,
+        overwrite: bool = False,
     ) -> None:
         """Generate outputs for every (model, test) pair and persist them.
 
-        Writes ``results_path`` once, overwriting any previous run: a single
-        JSON object ``{"outputs": [...], "provenance": {...}}`` with one row
-        per (test, model, sample).
+        The result is a single JSON object ``{"outputs": [...], "provenance":
+        {...}}`` at ``results_path``, one row per (test, model, sample).
+
+        Each row is also appended to ``checkpoint_path`` (and flushed to disk)
+        as soon as it is generated, so a crash part-way through a multi-hour
+        run loses at most the row in progress. ``resume=True`` reloads that
+        checkpoint, skips every (model, test_id, sample_index) that already
+        succeeded, and re-runs the ones that errored. The checkpoint is
+        deleted only after the final JSON is written.
+
+        To protect finished or interrupted work, a fresh run (``resume=False``)
+        refuses to start if a checkpoint exists, or if ``results_path`` exists
+        and ``overwrite`` is False.
 
         ``n_samples`` > 1 draws that many independent generations per (model,
         test) at the same sampling settings, each tagged with a
@@ -67,18 +92,50 @@ class TestRunner:
         gen_kwargs = gen_kwargs or {}
         os.makedirs(os.path.dirname(self.results_path) or ".", exist_ok=True)
         models = list(models)
+        header = {
+            "suite_sha256": provenance.file_sha256(self.test_suite_path),
+            "n_samples": n_samples,
+        }
+
+        done: Dict[Tuple[str, str, int], dict] = {}
+        if resume:
+            done = self._load_checkpoint(header)
+        elif os.path.exists(self.checkpoint_path):
+            raise FileExistsError(
+                f"{self.checkpoint_path} holds an interrupted run. Resume it "
+                "(--resume) or delete it before starting a new run."
+            )
+        elif os.path.exists(self.results_path) and not overwrite:
+            raise FileExistsError(
+                f"{self.results_path} already exists. Pass --overwrite to replace it."
+            )
+        if not os.path.exists(self.checkpoint_path):
+            with open(self.checkpoint_path, "w", encoding="utf-8") as sink:
+                sink.write(json.dumps({"header": header}) + "\n")
 
         rows: List[dict] = []
-        for model_id in models:
-            logger.info("Loading model under test: %s", model_id)
-            model = self.model_loader.load(model_id)
-            latencies: List[float] = []
-            for test in self.test_suite:
-                for sample_index in range(n_samples):
-                    row = self._run_one(model, model_id, test, gen_kwargs, sample_index)
-                    latencies.append(row["latency_s"])
+        with open(self.checkpoint_path, "a", encoding="utf-8") as checkpoint:
+            for model_id in models:
+                keys = [
+                    (model_id, test, i) for test in self.test_suite for i in range(n_samples)
+                ]
+                if all((m, t.id, i) in done for m, t, i in keys):
+                    logger.info("Skipping %s: all rows already in the checkpoint", model_id)
+                    rows.extend(done[(m, t.id, i)] for m, t, i in keys)
+                    continue
+                logger.info("Loading model under test: %s", model_id)
+                model = self.model_loader.load(model_id)
+                latencies: List[float] = []
+                for _, test, sample_index in keys:
+                    row = done.get((model_id, test.id, sample_index))
+                    if row is None:
+                        row = self._run_one(model, model_id, test, gen_kwargs, sample_index)
+                        latencies.append(row["latency_s"])
+                        checkpoint.write(json.dumps(row) + "\n")
+                        checkpoint.flush()
+                        os.fsync(checkpoint.fileno())
                     rows.append(row)
-            _log_latency_summary(model_id, latencies)
+                _log_latency_summary(model_id, latencies)
 
         payload = {
             "outputs": rows,
@@ -86,10 +143,43 @@ class TestRunner:
                 suite_path=self.test_suite_path, models=models, n_samples=n_samples
             ),
         }
-        with open(self.results_path, "w", encoding="utf-8") as sink:
+        tmp_path = self.results_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as sink:
             json.dump(payload, sink, indent=2)
             sink.write("\n")
+        os.replace(tmp_path, self.results_path)
+        os.remove(self.checkpoint_path)
         logger.info("Wrote %d output row(s) to %s", len(rows), self.results_path)
+
+    def _load_checkpoint(self, header: dict) -> Dict[Tuple[str, str, int], dict]:
+        """Successful rows from an interrupted run, keyed by (model, test_id, sample_index).
+
+        Refuses a checkpoint written for a different suite or ``n_samples``:
+        mixing rows from two configurations would silently corrupt the run.
+        A truncated last line (a crash mid-write) is ignored.
+        """
+        if not os.path.exists(self.checkpoint_path):
+            logger.info("No checkpoint at %s; starting from scratch", self.checkpoint_path)
+            return {}
+        with open(self.checkpoint_path, encoding="utf-8") as source:
+            lines = source.read().splitlines()
+        saved = json.loads(lines[0]).get("header") if lines else None
+        if saved != header:
+            raise CheckpointMismatchError(
+                f"{self.checkpoint_path} was written for {saved}, but this run is "
+                f"{header}. Delete it to start over."
+            )
+        done: Dict[Tuple[str, str, int], dict] = {}
+        for line in lines[1:]:
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                logger.warning("Ignoring a truncated checkpoint line")
+                continue
+            if row.get("error") is None:
+                done[(row["model"], row["test_id"], row["sample_index"])] = row
+        logger.info("Resuming: %d successful row(s) in the checkpoint", len(done))
+        return done
 
     def _run_one(
         self, model, model_id: str, test: TestCase, gen_kwargs: dict, sample_index: int = 0

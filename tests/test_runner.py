@@ -105,3 +105,144 @@ def test_runner_times_failed_generations_too(tmp_path):
     assert all(r["output"] == "" for r in rows)
     assert all("kaboom" in r["error"] for r in rows)
     assert all("latency_s" in r for r in rows)
+
+
+# ---------------------------------------------------------------------- #
+# Checkpointing / resume (validation gap R2)
+# ---------------------------------------------------------------------- #
+class _CrashAfter:
+    """Returns outputs for the first `n` calls, then simulates the process
+    dying (KeyboardInterrupt is not caught by _run_one's `except Exception`)."""
+
+    def __init__(self, n):
+        self.n = n
+        self.calls = 0
+
+    def generate(self, prompt, **kwargs):
+        self.calls += 1
+        if self.calls > self.n:
+            raise KeyboardInterrupt
+        return "first-run:" + prompt
+
+
+class _CountingLoader(_FakeLoader):
+    def __init__(self, model):
+        super().__init__(model)
+        self.loads = []
+
+    def load(self, model_id):
+        self.loads.append(model_id)
+        return self._model
+
+
+def test_successful_run_removes_the_checkpoint(tmp_path):
+    out = tmp_path / "outputs.json"
+    runner = Runner(_write_suite(tmp_path), _FakeLoader(_FakeModel()), results_path=str(out))
+    runner.run_tests(["m"])
+    assert len(_read_outputs(out)) == 2
+    assert not (tmp_path / "outputs.json.partial.jsonl").exists()
+
+
+def test_crash_then_resume_keeps_finished_rows_and_generates_the_rest(tmp_path):
+    import pytest
+
+    out = tmp_path / "outputs.json"
+    suite = _write_suite(tmp_path)
+    with pytest.raises(KeyboardInterrupt):
+        Runner(suite, _FakeLoader(_CrashAfter(1)), results_path=str(out)).run_tests(["m"])
+    assert not out.exists()  # no final file from a crashed run
+
+    model = _FakeModel()
+    Runner(suite, _FakeLoader(model), results_path=str(out)).run_tests(["m"], resume=True)
+
+    rows = _read_outputs(out)
+    assert [r["test_id"] for r in rows] == ["t1", "t2"]
+    assert rows[0]["output"] == "first-run:p1"  # kept from the checkpoint
+    assert rows[1]["output"] == "out:p2"  # generated on resume
+    assert [c["prompt"] for c in model.calls] == ["p2"]  # t1 not regenerated
+
+
+def test_resume_reruns_errored_rows(tmp_path):
+    out = tmp_path / "outputs.json"
+    suite = _write_suite(tmp_path)
+    runner = Runner(suite, _FakeLoader(_BoomModel()), results_path=str(out))
+    runner.run_tests(["m"])
+    # Re-create a checkpoint from the errored rows, as if the run had died.
+    checkpoint = tmp_path / "outputs.json.partial.jsonl"
+    rows = _read_outputs(out)
+    header = {"header": {"suite_sha256": json.loads(out.read_text())["provenance"]["suite_sha256"],
+                         "n_samples": 1}}
+    checkpoint.write_text("\n".join(json.dumps(x) for x in [header, *rows]) + "\n")
+
+    model = _FakeModel()
+    Runner(suite, _FakeLoader(model), results_path=str(out)).run_tests(["m"], resume=True)
+    assert len(model.calls) == 2  # both errored rows re-run
+    assert all(r["error"] is None for r in _read_outputs(out))
+
+
+def test_resume_skips_loading_a_model_whose_rows_are_all_done(tmp_path):
+    import pytest
+
+    out = tmp_path / "outputs.json"
+    suite = _write_suite(tmp_path)
+    # Model "a" finishes; the crash happens on model "b".
+    crash = _CrashAfter(2)
+    with pytest.raises(KeyboardInterrupt):
+        Runner(suite, _FakeLoader(crash), results_path=str(out)).run_tests(["a", "b"])
+
+    loader = _CountingLoader(_FakeModel())
+    Runner(suite, loader, results_path=str(out)).run_tests(["a", "b"], resume=True)
+    assert loader.loads == ["b"]
+    assert [(r["model"], r["test_id"]) for r in _read_outputs(out)] == [
+        ("a", "t1"), ("a", "t2"), ("b", "t1"), ("b", "t2"),
+    ]
+
+
+def test_fresh_run_refuses_to_discard_an_interrupted_checkpoint(tmp_path):
+    import pytest
+
+    out = tmp_path / "outputs.json"
+    suite = _write_suite(tmp_path)
+    with pytest.raises(KeyboardInterrupt):
+        Runner(suite, _FakeLoader(_CrashAfter(1)), results_path=str(out)).run_tests(["m"])
+    with pytest.raises(FileExistsError, match="--resume"):
+        Runner(suite, _FakeLoader(_FakeModel()), results_path=str(out)).run_tests(["m"])
+
+
+def test_fresh_run_refuses_to_overwrite_results_unless_asked(tmp_path):
+    import pytest
+
+    out = tmp_path / "outputs.json"
+    suite = _write_suite(tmp_path)
+    Runner(suite, _FakeLoader(_FakeModel()), results_path=str(out)).run_tests(["m"])
+    with pytest.raises(FileExistsError, match="--overwrite"):
+        Runner(suite, _FakeLoader(_FakeModel()), results_path=str(out)).run_tests(["m"])
+    Runner(suite, _FakeLoader(_FakeModel()), results_path=str(out)).run_tests(["m"], overwrite=True)
+    assert len(_read_outputs(out)) == 2
+
+
+def test_resume_refuses_a_checkpoint_from_a_different_configuration(tmp_path):
+    import pytest
+
+    out = tmp_path / "outputs.json"
+    suite = _write_suite(tmp_path)
+    with pytest.raises(KeyboardInterrupt):
+        Runner(suite, _FakeLoader(_CrashAfter(1)), results_path=str(out)).run_tests(["m"])
+    with pytest.raises(ValueError, match="n_samples"):
+        Runner(suite, _FakeLoader(_FakeModel()), results_path=str(out)).run_tests(
+            ["m"], n_samples=3, resume=True
+        )
+
+
+def test_resume_ignores_a_truncated_last_line(tmp_path):
+    import pytest
+
+    out = tmp_path / "outputs.json"
+    suite = _write_suite(tmp_path)
+    with pytest.raises(KeyboardInterrupt):
+        Runner(suite, _FakeLoader(_CrashAfter(1)), results_path=str(out)).run_tests(["m"])
+    checkpoint = tmp_path / "outputs.json.partial.jsonl"
+    checkpoint.write_text(checkpoint.read_text() + '{"test_id": "t2", "mod')  # crash mid-write
+
+    Runner(suite, _FakeLoader(_FakeModel()), results_path=str(out)).run_tests(["m"], resume=True)
+    assert [r["test_id"] for r in _read_outputs(out)] == ["t1", "t2"]

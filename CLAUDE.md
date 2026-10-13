@@ -187,6 +187,8 @@ python harness/evaluator.py --outputs results/model_outputs.json --judges cheap 
 python harness/evaluator.py --models gemma-4-12b --no-judge                    # generate only
 python harness/evaluator.py --models gemma-4-12b --judges cheap --no-hydrate   # skip HF download
 python harness/evaluator.py --models gemma-4-12b --n-samples 3                 # repeated sampling
+python harness/evaluator.py --models gemma-4-12b --resume      # continue a crashed run from its checkpoint
+python harness/evaluator.py --models gemma-4-12b --overwrite   # replace an existing outputs file
 
 python harness/hydrate.py --dry-run       # list open weights that would be downloaded
 
