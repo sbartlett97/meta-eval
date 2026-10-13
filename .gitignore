@@ -222,3 +222,10 @@ results/*.json
 results/*.jsonl
 results/*.tmp
 !results/.gitkeep
+
+# Editor, OS and agent files
+.idea/
+.DS_Store
+.remember/
+.claude/
+logs/
