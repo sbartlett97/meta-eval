@@ -220,3 +220,19 @@ def test_failed_generations_are_not_judged(tmp_path):
         assert rows[t]["generation_error"] is None
         assert rows[t]["verdicts"][0]["test_id"] == t
     assert json.loads(meta_eval.read_text())  # meta-eval tolerates the empty row
+
+
+def test_cut_off_reasoning_with_no_answer_is_not_judged(tmp_path):
+    outputs = tmp_path / "model_outputs.json"
+    verdicts = tmp_path / "model_verdicts.json"
+    outputs.write_text(json.dumps({"outputs": [
+        {"test_id": "t1", "model": "m", "criteria": "c", "output": "",
+         "reasoning": ["still thinking"], "reasoning_complete": False},
+    ]}))
+    run_evaluation(
+        outputs_path=str(outputs), judges_config=_HEURISTIC_ONLY,
+        verdicts_path=str(verdicts), hardware_profile={}, meta_eval_path=None,
+    )
+    row = json.loads(verdicts.read_text())["verdicts"][0]
+    assert "reasoning trace was cut off" in row["generation_error"]
+    assert row["verdicts"] == [] and row["consensus"] is None

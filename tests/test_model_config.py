@@ -13,6 +13,10 @@ _CONFIG = "config/models.yaml"
 # Raw (non-instruct) base checkpoints: no chat template, so they must run in
 # completion mode. Keep in sync with config/models.yaml.
 _COMPLETION_MODELS = {"llama-3-8b", "qwen2.5-coder-7b"}
+# Models whose replies start with a thinking trace (seen in the 2026-08 run).
+_REASONING_MODELS = {
+    "Ornith-1.0-9B", "qwythos-9b", "Qwen3.5-9B-The-Defiant-Fable-Uncensored", "Qwopus3.5-9B-Coder",
+}
 
 
 def _llamacpp_ids():
@@ -31,6 +35,9 @@ def test_shipped_models_load_with_the_intended_mode(model_id):
     assert isinstance(model, LlamaCppModel)
     expected = "completion" if model_id in _COMPLETION_MODELS else "chat"
     assert model.mode == expected
+    assert model.reasoning == (model_id in _REASONING_MODELS)
+    if model.reasoning:
+        assert model.max_tokens >= 4096  # 512 ends most replies mid-trace
 
 
 def test_top_level_mode_key_is_rejected():

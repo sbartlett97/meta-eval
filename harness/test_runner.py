@@ -24,6 +24,7 @@ import time
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from harness import provenance
+from harness.reasoning import SplitReply, split_reasoning
 from harness.test_suite import TestCase, load_test_suite
 
 logger = logging.getLogger(__name__)
@@ -187,19 +188,27 @@ class TestRunner:
         start = time.monotonic()
         transcript = None
         finish_reasons = None
+        raw_replies: Optional[List[str]] = None
+        splits: List[SplitReply] = []
         try:
             if test.is_multi_turn:
                 # Real conversation: turn n sees the model's own reply to turn
                 # n-1, not just its raw text (see model_loader.generate_conversation).
-                replies = model.generate_conversation(
+                raw_replies = list(model.generate_conversation(
                     test.turns, system_prompt=test.system_prompt, **gen_kwargs
-                )
-                transcript = _format_transcript(test.turns, replies)
-                output = replies[-1] if replies else ""
+                ))
             else:
-                output = model.generate(
+                raw_replies = [model.generate(
                     test.prompt, system_prompt=test.system_prompt, **gen_kwargs
-                )
+                )]
+            # Judges score the final answer; the thinking trace is kept apart
+            # (decision D2, harness/reasoning.py).
+            opens_think = bool(getattr(model, "reasoning", False))
+            splits = [split_reasoning(r, opens_think) for r in raw_replies]
+            answers = [sp.answer for sp in splits]
+            output = answers[-1] if answers else ""
+            if test.is_multi_turn:
+                transcript = _format_transcript(test.turns, answers)
             error = None
             # Backends that report it (llama.cpp, Ollama) give one finish
             # reason per turn; "length" means the reply was cut short.
@@ -236,6 +245,16 @@ class TestRunner:
             # single-turn) -- judges score this, not just the final reply, so
             # consistency-across-turns criteria are actually checkable.
             "transcript": transcript,
+            # Per turn, like ``turns``. ``reasoning`` is None for a reply with
+            # no thinking trace; ``raw_replies`` is exactly what the model sent.
+            "raw_replies": raw_replies,
+            "reasoning": (
+                [sp.reasoning for sp in splits]
+                if any(sp.reasoning is not None for sp in splits) else None
+            ),
+            # False if any turn's trace was cut off before its answer began:
+            # that turn has no final answer to grade.
+            "reasoning_complete": _all_complete(splits),
             "finish_reasons": finish_reasons,
             # True if any turn hit max_tokens or the context window. None when
             # the backend does not report finish reasons.
@@ -245,6 +264,13 @@ class TestRunner:
             "error": error,
             "latency_s": round(latency_s, 3),
         }
+
+
+def _all_complete(splits: List[SplitReply]) -> Optional[bool]:
+    """False if any trace was cut off, True if all traces finished, None if
+    no reply had a trace."""
+    flags = [sp.reasoning_complete for sp in splits if sp.reasoning_complete is not None]
+    return all(flags) if flags else None
 
 
 def _format_transcript(turns: List[str], replies: List[str]) -> str:

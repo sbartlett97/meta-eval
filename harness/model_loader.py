@@ -149,6 +149,12 @@ class LlamaCppModel:
     additional_files: List[str] = field(default_factory=list)
     engine_kwargs: Dict = field(default_factory=dict)
     mode: str = "chat"
+    #: True if the chat template opens a ``<think>`` block (serving.reasoning);
+    #: TestRunner uses it to split the trace from the final answer.
+    reasoning: bool = False
+    #: Default generation budget (serving.max_tokens). Reasoning models need
+    #: far more than 512 to get past the trace to an answer.
+    max_tokens: int = _DEFAULT_MAX_TOKENS
     #: llama.cpp ``finish_reason`` per turn of the most recent call ("stop" /
     #: "length"); read by TestRunner to flag truncated replies.
     last_finish_reasons: List[Optional[str]] = field(default_factory=list, repr=False)
@@ -164,7 +170,7 @@ class LlamaCppModel:
         text = call(
             prompt,
             system_prompt=system_prompt,
-            max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+            max_tokens=kwargs.get("max_tokens", self.max_tokens),
             temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
         )
         self.last_finish_reasons = list(engine.last_finish_reasons)
@@ -183,7 +189,7 @@ class LlamaCppModel:
         replies = call(
             turns,
             system_prompt=system_prompt,
-            max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+            max_tokens=kwargs.get("max_tokens", self.max_tokens),
             temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
         )
         self.last_finish_reasons = list(engine.last_finish_reasons)
@@ -305,6 +311,8 @@ class ModelLoader:
                     self._profile, n_ctx=llamacpp_engine.n_ctx_for(entry, self._profile)
                 ),
                 mode=mode,
+                reasoning=bool(serving.get("reasoning", False)),
+                max_tokens=int(serving.get("max_tokens", _DEFAULT_MAX_TOKENS)),
             )
 
         if engine == "ollama":

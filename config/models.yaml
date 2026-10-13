@@ -62,6 +62,11 @@ local_models:
     context_tokens: 32768
     serving:
       mode: chat
+      # Thinks before answering; the chat template opens <think>, so replies
+      # are "<trace></think><answer>". 4096 is provisional [Sam, task 1.10]:
+      # at 512 most replies ended mid-trace with no answer.
+      reasoning: true
+      max_tokens: 4096
       engine: "llamacpp"
       gguf_file: "*Q4_K_M.gguf"
 
@@ -171,6 +176,11 @@ fine_tuned_models:
     context_tokens: 32768
     serving:
       mode: chat
+      # Thinks before answering; the chat template opens <think>, so replies
+      # are "<trace></think><answer>". 4096 is provisional [Sam, task 1.10]:
+      # at 512 most replies ended mid-trace with no answer.
+      reasoning: true
+      max_tokens: 4096
       engine: "llamacpp"
       gguf_file: "Qwythos-9B-Claude-Mythos-5-1M-BF16.gguf"
 
@@ -270,6 +280,11 @@ fine_tuned_models:
     context_tokens: 32768
     serving:
       mode: chat
+      # Thinks before answering; the chat template opens <think>, so replies
+      # are "<trace></think><answer>". 4096 is provisional [Sam, task 1.10]:
+      # at 512 most replies ended mid-trace with no answer.
+      reasoning: true
+      max_tokens: 4096
       engine: "llamacpp"
       gguf_file: "*NEO-MAX-Q4_K_M.gguf"
 
@@ -303,6 +318,11 @@ fine_tuned_models:
     context_tokens: 32768
     serving:
       mode: chat
+      # Thinks before answering; the chat template opens <think>, so replies
+      # are "<trace></think><answer>". 4096 is provisional [Sam, task 1.10]:
+      # at 512 most replies ended mid-trace with no answer.
+      reasoning: true
+      max_tokens: 4096
       engine: "llamacpp"
       gguf_file: "*Q4_K_M.gguf"
 #

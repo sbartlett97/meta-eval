@@ -148,6 +148,14 @@ docs/critical-assessment.md  # the audit this round of fixes addresses
   Each model and local judge is served at `min(context_tokens,
   llamacpp.max_n_ctx)` (`llamacpp_engine.n_ctx_for`); `llamacpp_defaults.n_ctx`
   is only the fallback for entries without `context_tokens`.
+- **Reasoning traces are split from the answer** (`harness/reasoning.py`,
+  decision D2). Models with `serving.reasoning: true` get their chat template
+  to open `<think>`, so replies arrive as `<trace></think><answer>`, and a reply
+  with no closing tag is an unfinished trace. Output rows carry `output` (the
+  final answer, which judges score), plus `reasoning`, `raw_replies` (one per
+  turn, like `turns`) and `reasoning_complete`. A row whose trace was cut off
+  with no answer is not judged; it gets `generation_error` like a failed
+  generation. Give these models a larger `serving.max_tokens`.
 - **Truncation is recorded, not guessed.** llama.cpp (`finish_reason`) and
   Ollama (`done_reason`) report why each turn ended. Models expose this as
   `last_finish_reasons`, and `TestRunner` writes `finish_reasons` and

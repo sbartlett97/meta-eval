@@ -107,13 +107,14 @@ def run_evaluation(
     # every row before the next judge runs). This keeps a sequentially-loaded
     # local judge resident for all its calls instead of reloading per row.
     rows = _load_output_rows(outputs_path)
-    # A failed generation has no response to grade. Judging its empty output
-    # would record the failure as model behaviour (validation gap C3), so these
-    # rows skip the panel and are kept as missing data instead.
-    judged_rows = [row for row in rows if not row.get("error")]
+    # A failed generation, or a reasoning trace cut off before any answer,
+    # has no response to grade. Judging its empty output would record the
+    # failure as model behaviour (validation gaps C3, C7), so these rows skip
+    # the panel and are kept as missing data instead.
+    judged_rows = [row for row in rows if _generation_error(row) is None]
     if len(judged_rows) < len(rows):
         logger.warning(
-            "Skipping %d row(s) whose generation failed; they are recorded with "
+            "Skipping %d row(s) with no answer to grade; they are recorded with "
             "generation_error set and no verdicts.", len(rows) - len(judged_rows),
         )
     items = [
@@ -180,11 +181,21 @@ def run_evaluation(
     return verdicts_path
 
 
+def _generation_error(row: Dict) -> Optional[str]:
+    """Why a row has no answer to grade, or None if it can be judged."""
+    if row.get("error"):
+        return row["error"]
+    if row.get("reasoning_complete") is False:
+        return "no final answer: the reasoning trace was cut off (raise serving.max_tokens)"
+    return None
+
+
 def _judgement(row: Dict, results) -> Dict:
     """Verdict fields for one output row; ``results`` yields the panel results
-    for the judged (non-errored) rows, in order."""
-    if row.get("error"):
-        return {"generation_error": row["error"], "verdicts": [], "consensus": None}
+    for the judged rows, in order."""
+    error = _generation_error(row)
+    if error is not None:
+        return {"generation_error": error, "verdicts": [], "consensus": None}
     result = next(results)
     return {
         "generation_error": None,

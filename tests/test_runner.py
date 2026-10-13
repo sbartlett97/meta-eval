@@ -277,3 +277,57 @@ def test_rows_leave_truncation_unknown_when_backend_does_not_report_it(tmp_path)
     Runner(_write_suite(tmp_path), _FakeLoader(_FakeModel()), results_path=str(out)).run_tests(["m"])
     row = _read_outputs(out)[0]
     assert row["finish_reasons"] is None and row["truncated"] is None
+
+
+# ---------------------------------------------------------------------- #
+# Reasoning traces are split from the final answer (validation gap C7)
+# ---------------------------------------------------------------------- #
+class _Thinker(_FakeModel):
+    reasoning = True  # chat template opens <think>
+
+    def __init__(self, replies):
+        super().__init__()
+        self._replies = iter(replies)
+
+    def generate(self, prompt, **kwargs):
+        return next(self._replies)
+
+    def generate_conversation(self, turns, **kwargs):
+        return [next(self._replies) for _ in turns]
+
+
+def test_rows_split_reasoning_from_the_final_answer(tmp_path):
+    out = tmp_path / "outputs.json"
+    model = _Thinker(["plan</think>\n\nAnswer one", "still thinking"])
+    Runner(_write_suite(tmp_path), _FakeLoader(model), results_path=str(out)).run_tests(["m"])
+    finished, cut_off = _read_outputs(out)
+
+    assert finished["output"] == "Answer one"
+    assert finished["reasoning"] == ["plan"]
+    assert finished["raw_replies"] == ["plan</think>\n\nAnswer one"]
+    assert finished["reasoning_complete"] is True
+
+    assert cut_off["output"] == ""
+    assert cut_off["reasoning"] == ["still thinking"]
+    assert cut_off["reasoning_complete"] is False
+
+
+def test_multi_turn_transcript_uses_final_answers_only(tmp_path):
+    suite = tmp_path / "suite.json"
+    suite.write_text(json.dumps({"evals": [
+        {"id": "mt", "turns": ["q1", "q2"], "criteria": "c"},
+    ]}))
+    out = tmp_path / "outputs.json"
+    model = _Thinker(["t1</think>a1", "t2</think>a2"])
+    Runner(str(suite), _FakeLoader(model), results_path=str(out)).run_tests(["m"])
+    row = _read_outputs(out)[0]
+    assert row["transcript"] == "User: q1\nAssistant: a1\nUser: q2\nAssistant: a2"
+    assert row["reasoning"] == ["t1", "t2"]
+
+
+def test_non_reasoning_rows_have_no_reasoning_fields_set(tmp_path):
+    out = tmp_path / "outputs.json"
+    Runner(_write_suite(tmp_path), _FakeLoader(_FakeModel()), results_path=str(out)).run_tests(["m"])
+    row = _read_outputs(out)[0]
+    assert row["reasoning"] is None and row["reasoning_complete"] is None
+    assert row["output"] == row["raw_replies"][0] == "out:p1"
