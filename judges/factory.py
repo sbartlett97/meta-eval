@@ -35,6 +35,8 @@ def build_judge(entry: Dict, llamacpp_kwargs: Optional[Dict] = None) -> Judge:
 
     if provider == "anthropic":
         options = {k: entry[k] for k in ("max_tokens", "effort") if k in entry}
+        if "batch" in entry:
+            options["use_batch"] = bool(entry["batch"])
         return ClaudeJudge(model=entry.get("model", CLAUDE_DEFAULT), judge_id=jid, **options)
     if provider == "openai":
         options = {k: entry[k] for k in ("max_tokens", "temperature") if k in entry}

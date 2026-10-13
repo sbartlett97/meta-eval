@@ -314,3 +314,24 @@ def test_untiered_harmful_items_are_logged(tmp_path, caplog):
             verdicts_path=str(tmp_path / "v.json"), hardware_profile={}, meta_eval_path=None,
         )
     assert "1 harmful item(s) have no severity_tier" in caplog.text
+
+
+def test_run_evaluation_batch_turns_on_batching_for_supporting_judges(tmp_path, monkeypatch):
+    from judges.claude_judge import ClaudeJudge
+    from judges.heuristic_judge import HeuristicJudge
+
+    seen = {}
+
+    def fake_many(self, items):
+        seen["use_batch"] = self.use_batch
+        return HeuristicJudge().evaluate_many(items)
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setattr(ClaudeJudge, "evaluate_many", fake_many)
+    outputs = tmp_path / "o.json"
+    _write_outputs_json(outputs)
+    run_evaluation(
+        outputs_path=str(outputs), judges_config=_WITH_CLAUDE, verdicts_path=str(tmp_path / "v.json"),
+        hardware_profile={}, meta_eval_path=None, batch=True,
+    )
+    assert seen == {"use_batch": True}

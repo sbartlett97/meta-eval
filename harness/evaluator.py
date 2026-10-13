@@ -89,6 +89,7 @@ def run_evaluation(
     reference_judge_id: Optional[str] = None,
     judge_ids: Optional[List[str]] = None,
     allow_legacy: bool = False,
+    batch: bool = False,
 ) -> str:
     """Judge previously-generated model outputs; write verdicts. Returns the path.
 
@@ -102,6 +103,12 @@ def run_evaluation(
         judge_ids=judge_ids,
     )
     require_credentials(judges)
+    if batch:
+        # Judges with a batch API grade the whole run in one batch (about
+        # half the price; results can take up to 24 h).
+        for judge in judges:
+            if judge.supports_batch:
+                judge.use_batch = True
     panel = JudgePanel(judges)
     logger.info("Judge panel: %s", [j.id for j in judges])
 
@@ -305,6 +312,12 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         "empty string to skip it.",
     )
     parser.add_argument(
+        "--batch",
+        action="store_true",
+        help="Grade with the provider's batch API where a judge supports it "
+        "(Claude): about half the price, results can take up to 24 hours.",
+    )
+    parser.add_argument(
         "--allow-legacy",
         action="store_true",
         help="Judge an outputs file that predates the current schema (no "
@@ -443,6 +456,7 @@ def _cli(argv: Optional[List[str]] = None) -> int:
             reference_judge_id=args.reference_judge,
             judge_ids=args.judge_ids,
             allow_legacy=args.allow_legacy,
+            batch=args.batch,
         )
     except LegacyOutputsError as exc:
         logger.error("%s", exc)

@@ -65,18 +65,32 @@ class JudgePanel:
         items = list(items)
         results = [PanelResult(test_id=item.test_id) for item in items]
         for judge in self.judges:
-            for item, result in zip(items, results):
-                result.verdicts.append(self._judge(judge, item))
+            for result, verdict in zip(results, self.judge_all(judge, items)):
+                result.verdicts.append(verdict)
         return results
 
-    def _judge(self, judge: Judge, item: EvalItem) -> Verdict:
-        """One judge's verdict on one item.
+    def judge_all(self, judge: Judge, items: Sequence[EvalItem]) -> List[Verdict]:
+        """One judge's verdicts on many items, in item order.
 
-        An item with an exact deterministic check (a format check) is decided
-        by the judge that runs it. The other judges skip it without a call and
-        record an abstained verdict, so they neither outvote the exact check
-        nor spend tokens on it (validation gap C12).
+        Items an exact check decides are skipped for the other judges (see
+        :meth:`_skip_verdict`). The rest go to ``judge.evaluate_many`` in one
+        call, so a batching backend (ClaudeJudge with ``use_batch``) can send
+        them as a single batch.
         """
+        verdicts: List[Optional[Verdict]] = [self._skip_verdict(judge, item) for item in items]
+        todo = [i for i, v in enumerate(verdicts) if v is None]
+        for i, verdict in zip(todo, judge.evaluate_many([items[i] for i in todo])):
+            verdicts[i] = verdict
+        return verdicts  # type: ignore[return-value]
+
+    def _judge(self, judge: Judge, item: EvalItem) -> Verdict:
+        return self.judge_all(judge, [item])[0]
+
+    def _skip_verdict(self, judge: Judge, item: EvalItem) -> Optional[Verdict]:
+        """An abstained "skipped" verdict if an exact deterministic check (a
+        format check) decides this item and this judge does not run it, else
+        None. Skipped judges neither outvote the exact check nor spend tokens
+        on it (validation gap C12)."""
         if (
             self._has_exact_judge
             and not judge.runs_exact_checks
@@ -90,7 +104,7 @@ class JudgePanel:
                 rationale="Skipped: an exact deterministic check decides this item.",
                 abstained=True,
             )
-        return judge.evaluate(item)
+        return None
 
     def cost_summary(self) -> Dict[str, dict]:
         """Aggregate per-judge latency/token stats from call logs."""

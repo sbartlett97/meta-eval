@@ -10,7 +10,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List, Optional, Sequence
 
 if TYPE_CHECKING:  # pragma: no cover
     from judges.items import EvalItem
@@ -120,6 +120,8 @@ class Judge(ABC):
     #: True for a judge that decides exactly-checkable items (format checks)
     #: by code. When one is in the panel, the other judges skip those items.
     runs_exact_checks: bool = False
+    #: True for a judge whose evaluate_many can use a batch API (``use_batch``).
+    supports_batch: bool = False
 
     def __init__(self) -> None:
         self.call_log: List[JudgeCallRecord] = []
@@ -190,16 +192,25 @@ class Judge(ABC):
             )
         if verdict.latency_s is None:
             verdict.latency_s = time.monotonic() - start
+        self._log_call(verdict)
+        return verdict
+
+    def evaluate_many(self, items: Sequence["EvalItem"]) -> List[Verdict]:
+        """Verdicts for many items, in order. One :meth:`evaluate` per item by
+        default; a backend with a batch API overrides this to send them
+        together (see ClaudeJudge)."""
+        return [self.evaluate(item) for item in items]
+
+    def _log_call(self, verdict: Verdict) -> None:
         self.call_log.append(
             JudgeCallRecord(
                 judge_id=self.id,
-                test_id=test_id,
-                latency_s=verdict.latency_s,
+                test_id=verdict.test_id,
+                latency_s=verdict.latency_s or 0.0,
                 tokens=verdict.tokens,
                 ok=verdict.error is None,
             )
         )
-        return verdict
 
 
 # ---------------------------------------------------------------------- #

@@ -140,3 +140,77 @@ def test_shipped_judges_config_uses_current_models():
     assert cfg["claude-sonnet-5-5"]["model"] == "claude-sonnet-5-5"
     assert "temperature" not in cfg["claude-sonnet-5-5"]
     assert cfg["gpt-4o-2024-11-20"]["model"] == "gpt-4o-2024-11-20"
+
+
+# ---------------------------------------------------------------------- #
+# Message Batches (task 2.9)
+# ---------------------------------------------------------------------- #
+from tests.fake_clients import FakeAnthropicBatches  # noqa: E402
+
+
+def _items(n):
+    return [EvalItem(f"t{i}", f"resp {i}", "expect:FAIL", turns=(f"req {i}",),
+                     item_type="harmful_request", severity_tier=1) for i in range(n)]
+
+
+def _answer(spec):
+    return json.dumps({**_ANSWER, "specificity": spec})
+
+
+def test_batch_matches_results_by_custom_id_not_position():
+    judge = ClaudeJudge(api_key="k", use_batch=True, batch_poll_s=0)
+    judge._client = FakeAnthropicBatches(
+        {"item-0": _answer(1), "item-1": _answer(3), "item-2": _answer(5)}, polls_before_end=2)
+    verdicts = judge.evaluate_many(_items(3))
+    # Results arrive reversed; each verdict still belongs to its own item.
+    assert [v.test_id for v in verdicts] == ["t0", "t1", "t2"]
+    assert [v.scores["specificity"] for v in verdicts] == [1, 3, 5]
+    assert judge._client.requests == []  # no synchronous calls
+    req = judge._client.batch_requests[0]["params"]
+    assert req == judge._request(_items(1)[0])  # same request as the sync path
+    assert len(judge.call_log) == 3
+
+
+def test_failed_or_invalid_batch_results_are_regraded_synchronously():
+    judge = ClaudeJudge(api_key="k", use_batch=True, batch_poll_s=0)
+    judge._client = FakeAnthropicBatches(
+        {"item-0": _answer(2), "item-1": "errored", "item-2": '{"refused": 9}'},
+        sync_text=_answer(4),
+    )
+    verdicts = judge.evaluate_many(_items(3))
+    assert verdicts[0].scores["specificity"] == 2  # from the batch
+    assert [v.scores["specificity"] for v in verdicts[1:]] == [4, 4]  # re-graded
+    assert len(judge._client.requests) == 2
+
+
+def test_without_use_batch_each_item_is_a_normal_call():
+    judge = ClaudeJudge(api_key="k")
+    judge._client = FakeAnthropicBatches({}, sync_text=_answer(3))
+    judge.evaluate_many(_items(2))
+    assert judge._client.batch_requests == [] and len(judge._client.requests) == 2
+
+
+def test_batch_timeout_names_the_batch():
+    judge = ClaudeJudge(api_key="k", use_batch=True, batch_poll_s=0, batch_max_wait_s=0)
+    judge._client = FakeAnthropicBatches({}, polls_before_end=99)
+    with pytest.raises(TimeoutError, match="batch-1"):
+        judge.evaluate_many(_items(1))
+
+
+def test_panel_sends_one_batch_and_skips_exact_check_items():
+    from judges.heuristic_judge import HeuristicJudge
+    from judges.judge_panel import JudgePanel
+
+    judge = ClaudeJudge(api_key="k", use_batch=True, batch_poll_s=0)
+    judge._client = FakeAnthropicBatches({"item-0": _answer(2), "item-1": _answer(2)})
+    fmt = EvalItem("f", "{}", "expect:PASS", "format-adherence", {"check": "json"})
+    results = JudgePanel([HeuristicJudge(), judge]).evaluate_batch(_items(2) + [fmt])
+    assert len(judge._client.batch_requests) == 2  # the format item was not sent
+    assert results[2].by_judge()["claude-sonnet-5-5"].abstained
+
+
+def test_batch_option_from_config_and_run_evaluation(tmp_path, monkeypatch):
+    from judges.factory import build_judge
+
+    assert build_judge({"id": "c", "provider": "anthropic", "batch": True}).use_batch is True
+    assert build_judge({"id": "c", "provider": "anthropic"}).use_batch is False
