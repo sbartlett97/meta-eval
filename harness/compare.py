@@ -37,7 +37,17 @@ import logging
 from collections import Counter, defaultdict
 from typing import Dict, Iterable, List, Optional, Tuple
 
+import os
+import sys
+
 import yaml
+
+# Allow `python harness/compare.py` (see evaluator.py for the same pattern).
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from judges.meta_eval import latest_per_sample, majority_label  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +97,9 @@ def index_by_model(
     across samples, the exact bug this collapsing exists to prevent.
     """
     grouped: Dict[Tuple[str, str], List[Dict]] = defaultdict(list)
-    for row in rows:
+    # A re-judge repeats (model, test_id, sample_index): keep only the latest
+    # so it is not counted as extra samples.
+    for row in latest_per_sample(rows):
         model, test_id = row.get("model"), row.get("test_id")
         if model and test_id:
             grouped[(model, test_id)].append(row)
@@ -116,7 +128,7 @@ def _collapse_samples(group: List[Dict], verdict_source: str) -> Dict:
     """
     labels = [l for l in (_resolve_verdict(r, verdict_source) for r in group) if l]
     counts = Counter(labels)
-    majority = counts.most_common(1)[0][0] if counts else None
+    majority = majority_label(labels)  # a tie is AMBIGUOUS, not first-come
 
     collapsed = dict(group[0])
     collapsed["consensus"] = {
@@ -180,6 +192,9 @@ def _common_test_ids(variant_rows: Dict[str, Dict], base_rows: Dict[str, Dict]) 
 
 
 def _pass_rate(labels: Iterable[str]) -> Optional[float]:
+    """Share of PASS labels. Callers pass real verdicts only (no None). A
+    genuine AMBIGUOUS -- the judge read the response and could not decide --
+    stays in the denominator as a non-pass; compare_pair reports its count."""
     labels = list(labels)
     if not labels:
         return None
@@ -215,17 +230,31 @@ def compare_pair(
     variant_labels = {t: _resolve_verdict(variant_rows[t], verdict_source) for t in common}
     base_labels = {t: _resolve_verdict(base_rows[t], verdict_source) for t in common}
 
+    # A paired diff needs a real verdict on both sides. A side with none (every
+    # judge errored or abstained, or the generation failed) is missing data:
+    # counting it as a non-pass would invent a flip.
+    paired = [t for t in common if variant_labels[t] is not None and base_labels[t] is not None]
+    dropped = [t for t in common if t not in set(paired)]
+    result["n_paired_tests"] = len(paired)
+    result["n_dropped_no_verdict"] = len(dropped)
+    result["dropped_test_ids"] = dropped
+    if not paired:
+        result["warning"] = "no test has a real verdict on both sides"
+        return result
+
     result["overall"] = {
-        "variant_pass_rate": _pass_rate(variant_labels.values()),
-        "base_pass_rate": _pass_rate(base_labels.values()),
+        "variant_pass_rate": _pass_rate(variant_labels[t] for t in paired),
+        "base_pass_rate": _pass_rate(base_labels[t] for t in paired),
+        "variant_n_ambiguous": sum(variant_labels[t] == "AMBIGUOUS" for t in paired),
+        "base_n_ambiguous": sum(base_labels[t] == "AMBIGUOUS" for t in paired),
     }
     result["overall"]["delta"] = _delta(result["overall"])
 
     for dimension in ("category", "domain", "technique", "severity"):
-        result[dimension] = _breakdown_by(dimension, common, variant_rows, variant_labels, base_labels)
+        result[dimension] = _breakdown_by(dimension, paired, variant_rows, variant_labels, base_labels)
 
     flips = []
-    for t in common:
+    for t in paired:
         v, b = variant_labels[t], base_labels[t]
         if v != b:
             flips.append({"test_id": t, "base_verdict": b, "variant_verdict": v})
@@ -237,13 +266,13 @@ def compare_pair(
 
 def _breakdown_by(
     field: str,
-    common: List[str],
+    paired: List[str],
     variant_rows: Dict[str, Dict],
     variant_labels: Dict[str, Optional[str]],
     base_labels: Dict[str, Optional[str]],
 ) -> Dict[str, Dict]:
     groups: Dict[str, List[str]] = defaultdict(list)
-    for t in common:
+    for t in paired:
         groups[variant_rows[t].get(field) or "uncategorized"].append(t)
 
     breakdown: Dict[str, Dict] = {}

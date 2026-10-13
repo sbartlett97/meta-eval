@@ -25,6 +25,7 @@ computed separately and written to ``results/judge_meta_eval.json``; see
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -41,10 +42,12 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from harness import provenance
+from harness.env import load_env
 from harness.hydrate import hydrate_weights
 from harness.model_loader import ModelLoader
-from harness.test_runner import TestRunner
+from harness.test_runner import CheckpointMismatchError, TestRunner
 from judges.factory import build_judges
+from judges.prompts import JUDGE_PROMPT_TEMPLATE
 from judges.judge_panel import EvalItem, JudgePanel, aggregate_verdicts
 from judges.meta_eval import meta_evaluation_report
 
@@ -58,6 +61,25 @@ _JUDGE_PRESETS = {
 }
 
 
+class MissingCredentialsError(RuntimeError):
+    """An enabled judge has no API credential, so every verdict it gave would be an error."""
+
+
+def require_credentials(judges) -> None:
+    """Raise :class:`MissingCredentialsError` if any judge cannot authenticate.
+
+    Without this, a remote judge with no key fails closed to an AMBIGUOUS
+    verdict on every row and the run still exits 0 -- the panel silently loses
+    its model-independent anchor.
+    """
+    missing = [f"{j.id} (needs {j.credential_env})" for j in judges if not j.has_credentials()]
+    if missing:
+        raise MissingCredentialsError(
+            "Judge(s) without credentials: " + ", ".join(missing)
+            + ". Set the variable(s) in the environment or in .env, or disable those judges."
+        )
+
+
 def run_evaluation(
     outputs_path: str,
     judges_config: str = "config/judges.yaml",
@@ -65,12 +87,22 @@ def run_evaluation(
     max_priority: Optional[int] = None,
     hardware_profile: str = "config/hardware_profile.yaml",
     meta_eval_path: Optional[str] = "results/judge_meta_eval.json",
-    reference_judge_id: str = "heuristic-baseline",
+    reference_judge_id: Optional[str] = None,
+    judge_ids: Optional[List[str]] = None,
+    allow_legacy: bool = False,
 ) -> str:
-    """Judge previously-generated model outputs; write verdicts. Returns the path."""
+    """Judge previously-generated model outputs; write verdicts. Returns the path.
+
+    ``judge_ids`` selects exactly those judges and overrides ``max_priority``
+    (see ``judges.factory.select_judge_entries``). An outputs file that
+    predates the current schema raises :class:`LegacyOutputsError` unless
+    ``allow_legacy`` is True.
+    """
     judges = build_judges(
-        judges_config, max_priority=max_priority, hardware_profile=hardware_profile
+        judges_config, max_priority=max_priority, hardware_profile=hardware_profile,
+        judge_ids=judge_ids,
     )
+    require_credentials(judges)
     panel = JudgePanel(judges)
     logger.info("Judge panel: %s", [j.id for j in judges])
 
@@ -79,7 +111,19 @@ def run_evaluation(
     # Read all outputs, then judge the batch judge-outer (each judge processes
     # every row before the next judge runs). This keeps a sequentially-loaded
     # local judge resident for all its calls instead of reloading per row.
-    rows = _load_output_rows(outputs_path)
+    rows, outputs_provenance = _read_outputs(outputs_path)
+    if not allow_legacy:
+        _check_current_schema(outputs_path, rows, outputs_provenance)
+    # A failed generation, or a reasoning trace cut off before any answer,
+    # has no response to grade. Judging its empty output would record the
+    # failure as model behaviour (validation gaps C3, C7), so these rows skip
+    # the panel and are kept as missing data instead.
+    judged_rows = [row for row in rows if _generation_error(row) is None]
+    if len(judged_rows) < len(rows):
+        logger.warning(
+            "Skipping %d row(s) with no answer to grade; they are recorded with "
+            "generation_error set and no verdicts.", len(rows) - len(judged_rows),
+        )
     items = [
         EvalItem(
             test_id=row["test_id"],
@@ -90,10 +134,12 @@ def run_evaluation(
             criteria=row.get("criteria", ""),
             category=row.get("category", "uncategorized"),
             metadata=row.get("metadata") or {},
+            turns=tuple(row.get("turns") or ()),
+            system_prompt=row.get("system_prompt"),
         )
-        for row in rows
+        for row in judged_rows
     ]
-    results = panel.evaluate_batch(items)
+    results = iter(panel.evaluate_batch(items))
 
     records = [
         {
@@ -109,10 +155,9 @@ def run_evaluation(
             "technique": row.get("technique", ""),
             "severity": row.get("severity", ""),
             "source": row.get("source", ""),
-            "verdicts": [v.to_dict() for v in result.verdicts],
-            "consensus": aggregate_verdicts(result),
+            **_judgement(row, results),
         }
-        for row, result in zip(rows, results)
+        for row in rows
     ]
     payload = {
         "verdicts": records,
@@ -120,6 +165,11 @@ def run_evaluation(
             outputs_path=outputs_path,
             judges_config=judges_config if isinstance(judges_config, str) else None,
             judge_panel=[j.id for j in judges],
+            judge_details=[j.describe() for j in judges],
+            judge_prompt_sha256=hashlib.sha256(JUDGE_PROMPT_TEMPLATE.encode()).hexdigest(),
+            # The suite hash, models and seeds live here, so verdicts can be
+            # traced back to exactly what was generated.
+            outputs_provenance=outputs_provenance,
         ),
     }
     with open(verdicts_path, "w", encoding="utf-8") as sink:
@@ -143,20 +193,75 @@ def run_evaluation(
     return verdicts_path
 
 
+def _generation_error(row: Dict) -> Optional[str]:
+    """Why a row has no answer to grade, or None if it can be judged."""
+    if row.get("error"):
+        return row["error"]
+    if row.get("reasoning_complete") is False:
+        return "no final answer: the reasoning trace was cut off (raise serving.max_tokens)"
+    return None
+
+
+def _judgement(row: Dict, results) -> Dict:
+    """Verdict fields for one output row; ``results`` yields the panel results
+    for the judged rows, in order."""
+    error = _generation_error(row)
+    if error is not None:
+        return {"generation_error": error, "verdicts": [], "consensus": None}
+    result = next(results)
+    return {
+        "generation_error": None,
+        "verdicts": [v.to_dict() for v in result.verdicts],
+        "consensus": aggregate_verdicts(result),
+    }
+
+
+class LegacyOutputsError(ValueError):
+    """The outputs file predates the current schema and should be regenerated."""
+
+
+#: Row fields every current outputs file has. Older files lack them, and also
+#: lack the fixes they stand for: system prompts were dropped, multi-turn cases
+#: were collapsed, and judges could not see the request (validation gap C8).
+_REQUIRED_ROW_KEYS = ("sample_index", "turns")
+
+
+def _read_outputs(outputs_path: str):
+    """``(rows, provenance)`` from an outputs file. ``provenance`` is None for
+    a bare array or a legacy ``.jsonl`` file."""
+    if outputs_path.endswith(".jsonl"):
+        with open(outputs_path, "r", encoding="utf-8") as src:
+            return [json.loads(line) for line in src if line.strip()], None
+    with open(outputs_path, "r", encoding="utf-8") as src:
+        data = json.load(src)
+    if isinstance(data, dict):
+        return data.get("outputs", []), data.get("provenance")
+    return data, None
+
+
 def _load_output_rows(outputs_path: str) -> List[Dict]:
     """Load model-output rows from a ``{"outputs": [...]}`` JSON file.
 
     A bare top-level array is accepted too, and legacy ``.jsonl`` outputs (one
     object per line) still load, dispatched on the file extension.
     """
-    if outputs_path.endswith(".jsonl"):
-        with open(outputs_path, "r", encoding="utf-8") as src:
-            return [json.loads(line) for line in src if line.strip()]
-    with open(outputs_path, "r", encoding="utf-8") as src:
-        data = json.load(src)
-    if isinstance(data, dict):
-        return data.get("outputs", [])
-    return data
+    return _read_outputs(outputs_path)[0]
+
+
+def _check_current_schema(outputs_path: str, rows: List[Dict], provenance) -> None:
+    """Raise :class:`LegacyOutputsError` unless the file has provenance and
+    every row has the current required fields."""
+    problems = []
+    if not provenance:
+        problems.append("no provenance block")
+    missing = sorted({k for row in rows for k in _REQUIRED_ROW_KEYS if k not in row})
+    if missing:
+        problems.append(f"rows without {missing}")
+    if problems:
+        raise LegacyOutputsError(
+            f"{outputs_path} predates the current output schema ({'; '.join(problems)}). "
+            "Regenerate it with --models, or pass --allow-legacy to judge it anyway."
+        )
 
 
 def _cli(argv: Optional[List[str]] = None) -> int:
@@ -184,10 +289,17 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         "empty string to skip it.",
     )
     parser.add_argument(
+        "--allow-legacy",
+        action="store_true",
+        help="Judge an outputs file that predates the current schema (no "
+        "provenance / sample_index / turns). Its numbers are not comparable "
+        "with a current run.",
+    )
+    parser.add_argument(
         "--reference-judge",
-        default="heuristic-baseline",
-        help="Judge id to compute divergence-from-reference against in the "
-        "meta-eval report; should be independent of every model under test.",
+        default=None,
+        help="Optional judge id to compute divergence-from-reference against in "
+        "the meta-eval report; pick one independent of every model under test.",
     )
     parser.add_argument(
         "--judges",
@@ -196,16 +308,43 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         help="Judge subset preset.",
     )
     parser.add_argument(
+        "--judge-ids",
+        type=lambda v: [x.strip() for x in v.split(",") if x.strip()],
+        default=None,
+        help="Comma-separated judge ids from judges.yaml (e.g. "
+        "heuristic-baseline,claude-sonnet-4-6). Overrides --judges and the "
+        "enabled flag.",
+    )
+    parser.add_argument(
         "--prefer-engine", default="llamacpp", choices=["llamacpp", "ollama"]
     )
     parser.add_argument(
         "--n-samples",
         type=int,
-        default=1,
+        default=3,
         help="Independent generations per (model, test) at the same sampling "
         "settings, so pass rates carry a variance estimate instead of a "
         "single noisy draw (see judges.meta_eval.sample_variance). Only "
         "applies with --models.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Base seed for generation; sample i uses seed + i. Recorded on "
+        "every output row. Only applies with --models.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Continue an interrupted generation run from its checkpoint "
+        "(<outputs>.partial.jsonl): keep rows that succeeded, re-run errored "
+        "and missing ones. Only applies with --models.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Allow a new generation run to replace an existing --outputs file.",
     )
     parser.add_argument(
         "--no-judge",
@@ -227,6 +366,21 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         parser.error("--no-judge only makes sense with --models (nothing to judge, "
                      "nothing to generate otherwise).")
 
+    load_env()
+    # Check judge credentials before any download or generation, so a missing
+    # key doesn't surface only after hours of generation.
+    if not args.no_judge:
+        try:
+            require_credentials(build_judges(
+                args.judges_config,
+                max_priority=_JUDGE_PRESETS[args.judges],
+                hardware_profile=args.hardware_config,
+                judge_ids=args.judge_ids,
+            ))
+        except (MissingCredentialsError, ValueError) as exc:
+            logger.error("%s", exc)
+            return 2
+
     # Hydration: pull the open-weight checkpoints THIS run needs from HF up front
     # so the first in-process llama.cpp load doesn't block mid-run on a multi-GB
     # download. Scoped to the requested models + the judges actually selected, so
@@ -238,6 +392,7 @@ def _cli(argv: Optional[List[str]] = None) -> int:
             model_ids=args.models or [],
             include_judges=not args.no_judge,
             judge_max_priority=_JUDGE_PRESETS[args.judges],
+            judge_ids=args.judge_ids,
         )
 
     if args.models:
@@ -247,22 +402,35 @@ def _cli(argv: Optional[List[str]] = None) -> int:
             hardware_profile=args.hardware_config,
         )
         runner = TestRunner(args.test_suite, loader, results_path=args.outputs)
-        # run_tests overwrites the outputs file with a fresh {"outputs": [...]}.
-        runner.run_tests(args.models, n_samples=args.n_samples)
+        # Rows are checkpointed as they finish; see TestRunner.run_tests.
+        try:
+            runner.run_tests(
+                args.models, n_samples=args.n_samples,
+                resume=args.resume, overwrite=args.overwrite, seed=args.seed,
+            )
+        except (FileExistsError, CheckpointMismatchError) as exc:
+            logger.error("%s", exc)
+            return 2
 
     if args.no_judge:
         logger.info("Generation-only run (--no-judge); outputs at %s", args.outputs)
         return 0
 
-    run_evaluation(
-        outputs_path=args.outputs,
-        judges_config=args.judges_config,
-        verdicts_path=args.verdicts,
-        max_priority=_JUDGE_PRESETS[args.judges],
-        hardware_profile=args.hardware_config,
-        meta_eval_path=args.meta_eval or None,
-        reference_judge_id=args.reference_judge,
-    )
+    try:
+        run_evaluation(
+            outputs_path=args.outputs,
+            judges_config=args.judges_config,
+            verdicts_path=args.verdicts,
+            max_priority=_JUDGE_PRESETS[args.judges],
+            hardware_profile=args.hardware_config,
+            meta_eval_path=args.meta_eval or None,
+            reference_judge_id=args.reference_judge,
+            judge_ids=args.judge_ids,
+            allow_legacy=args.allow_legacy,
+        )
+    except LegacyOutputsError as exc:
+        logger.error("%s", exc)
+        return 2
     return 0
 
 

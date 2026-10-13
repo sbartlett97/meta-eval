@@ -20,7 +20,7 @@ hardware:
 # local serving backend: GGUF-native (points at a specific quant file) and loads
 # models sequentially. SAM MUST VERIFY these against the M5.
 llamacpp_defaults:
-  n_ctx: 2048                    # context window
+  n_ctx: 2048                    # fallback only, for entries without context_tokens
   n_gpu_layers: -1               # -1 => offload all layers to Metal
   n_batch: 512                   # prompt batch size
   verbose: false
@@ -32,3 +32,9 @@ llamacpp:
   # model and the judges never all hold weights simultaneously. Raise to 2 to
   # keep both local judges resident if the memory budget allows.
   max_resident: 1
+  # Upper bound on each model's and judge's context window. Each entry is
+  # served at min(its context_tokens, max_n_ctx) (llamacpp_engine.n_ctx_for).
+  # 2048 cut multi-turn replies short and broke local judges on long
+  # transcripts. 8192 is provisional: SAM MUST VERIFY memory and speed on the
+  # M5 (todo task 1.10).
+  max_n_ctx: 8192

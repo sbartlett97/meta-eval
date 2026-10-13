@@ -12,8 +12,13 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
+import platform
+import re
 import subprocess
+import sys
 from datetime import datetime, timezone
+from importlib import metadata
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -38,6 +43,76 @@ def git_commit() -> Optional[str]:
         return None
 
 
+def git_dirty() -> Optional[bool]:
+    """True if tracked files have uncommitted changes (the commit hash alone
+    then does not describe the code that ran); None if unknown."""
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True, text=True, timeout=5, check=True,
+        )
+        return bool(result.stdout.strip())
+    except Exception:  # noqa: BLE001 -- best-effort
+        return None
+
+
+#: Distributions whose versions change results: the serving backend, the
+#: judge SDKs, and the HF client that resolves weights.
+_TRACKED_PACKAGES = (
+    "llama_cpp_python", "anthropic", "openai", "huggingface_hub", "requests", "PyYAML",
+)
+
+
+def environment() -> Dict:
+    """Python, platform, hardware and package versions. Package versions are
+    read from installed metadata, so nothing heavy is imported."""
+    versions = {}
+    for dist in _TRACKED_PACKAGES:
+        try:
+            versions[dist] = metadata.version(dist)
+        except metadata.PackageNotFoundError:
+            versions[dist] = None
+    memory_gb = None
+    try:
+        memory_gb = round(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30, 1)
+    except (ValueError, OSError, AttributeError):
+        pass
+    return {
+        "python": sys.version.split()[0],
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "processor": platform.processor() or None,
+        "cpu_count": os.cpu_count(),
+        "memory_gb": memory_gb,
+        "packages": versions,
+    }
+
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def weights_info(path: Optional[str]) -> Optional[Dict]:
+    """Identify a weights file without hashing gigabytes.
+
+    The HuggingFace cache stores each LFS file as ``blobs/<sha256>``, with the
+    snapshot path a symlink to it, so the real path's name is the file hash.
+    For a file outside the cache, ``sha256`` is None.
+    """
+    if not path:
+        return None
+    real = os.path.realpath(path)
+    name = os.path.basename(real)
+    try:
+        size = os.path.getsize(real)
+    except OSError:
+        size = None
+    return {
+        "file": os.path.basename(path),
+        "size_bytes": size,
+        "sha256": name if _SHA256_RE.match(name) else None,
+    }
+
+
 def file_sha256(path: str) -> Optional[str]:
     """SHA-256 of a file's bytes, or ``None`` if it can't be read."""
     try:
@@ -60,6 +135,8 @@ def collect(suite_path: Optional[str] = None, **extra) -> Dict:
     provenance: Dict = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "harness_git_commit": git_commit(),
+        "harness_git_dirty": git_dirty(),
+        "environment": environment(),
     }
     if suite_path:
         provenance["suite_path"] = suite_path

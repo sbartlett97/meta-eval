@@ -17,6 +17,7 @@ import time
 from typing import Dict, List, Optional, Sequence
 
 from harness.llamacpp_engine import get_engine
+from harness import provenance
 from judges.base import Judge, Verdict
 from judges.prompts import format_judge_prompt, parse_json_from_response
 
@@ -64,6 +65,23 @@ class LocalLlamaCppJudge(Judge):
         self.max_tokens = max_tokens
         self.temperature = temperature
 
+    def describe(self) -> dict:
+        engine = get_engine(
+            repo_id=self.model_id,
+            filename=self.gguf_file,
+            additional_files=self.additional_files,
+            engine_kwargs=self.engine_kwargs,
+        )
+        return {
+            **super().describe(),
+            "repo_id": self.model_id,
+            "gguf_file": self.gguf_file,
+            "n_ctx": self.engine_kwargs.get("n_ctx"),
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "weights": provenance.weights_info(engine.resolved_path),
+        }
+
     def _evaluate(
         self,
         test_id: str,
@@ -94,7 +112,7 @@ class LocalLlamaCppJudge(Judge):
 
         parsed = parse_json_from_response(text)
         return Verdict(
-            verdict=parsed.get("verdict", "AMBIGUOUS"),
+            verdict=parsed.get("verdict"),  # missing -> ValueError -> error, not AMBIGUOUS
             confidence=parsed.get("confidence", 0.0),
             judge_id=self.id,
             test_id=test_id,

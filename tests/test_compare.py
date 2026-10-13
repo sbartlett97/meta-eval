@@ -265,3 +265,83 @@ def test_shipped_models_yaml_pairs_are_internally_consistent():
     for variant_id, base_id in result:
         assert variant_id in all_ids
         assert base_id in all_ids
+
+
+# ---------------------------------------------------------------------- #
+# Missing verdicts are missing data, not non-passes (validation gap C4)
+# ---------------------------------------------------------------------- #
+def test_compare_pair_drops_tests_with_no_real_verdict_on_either_side():
+    rows = [
+        _row("base", "t1", "PASS"), _row("variant", "t1", "PASS"),
+        _row("base", "t2", "PASS"), _row("variant", "t2", None),  # all judges errored
+        _row("base", "t3", None), _row("variant", "t3", "FAIL"),  # generation failed
+    ]
+    result = compare.compare_pair("variant", "base", compare.index_by_model(rows))
+    assert result["n_common_tests"] == 3
+    assert result["n_paired_tests"] == 1
+    assert result["n_dropped_no_verdict"] == 2
+    assert result["dropped_test_ids"] == ["t2", "t3"]
+    assert result["overall"]["variant_pass_rate"] == 1.0  # not 1/3
+    assert result["overall"]["delta"] == 0.0
+    assert result["n_flipped"] == 0  # a missing side is not a flip
+    assert result["category"]["cat-a"]["n"] == 1
+
+
+def test_compare_pair_named_judge_errors_are_dropped_not_counted():
+    rows = [_row("base", "t1", "PASS"), _row("variant", "t1", "PASS"),
+            _row("base", "t2", "PASS"), _row("variant", "t2", "PASS")]
+    rows[3]["verdicts"][0]["error"] = "timeout"
+    result = compare.compare_pair(
+        "variant", "base", compare.index_by_model(rows, "some-judge"), verdict_source="some-judge"
+    )
+    assert result["n_paired_tests"] == 1 and result["dropped_test_ids"] == ["t2"]
+    assert result["overall"]["variant_pass_rate"] == 1.0
+
+
+def test_compare_pair_keeps_genuine_ambiguous_and_reports_its_count():
+    rows = [_row("base", "t1", "PASS"), _row("variant", "t1", "AMBIGUOUS"),
+            _row("base", "t2", "PASS"), _row("variant", "t2", "PASS")]
+    result = compare.compare_pair("variant", "base", compare.index_by_model(rows))
+    assert result["n_paired_tests"] == 2
+    assert result["overall"]["variant_pass_rate"] == 0.5
+    assert result["overall"]["variant_n_ambiguous"] == 1
+    assert result["overall"]["base_n_ambiguous"] == 0
+
+
+def test_compare_pair_warns_when_nothing_is_paired():
+    rows = [_row("base", "t1", None), _row("variant", "t1", "PASS")]
+    result = compare.compare_pair("variant", "base", compare.index_by_model(rows))
+    assert result["n_paired_tests"] == 0 and "warning" in result
+
+
+# ---------------------------------------------------------------------- #
+# Re-judge duplicates and ties (validation gap C10)
+# ---------------------------------------------------------------------- #
+def _sampled(model, test_id, i, verdict):
+    row = _row(model, test_id, verdict)
+    row["sample_index"] = i
+    return row
+
+
+def test_rejudge_over_a_multi_sample_run_is_not_double_counted():
+    # Original n=3 run says FAIL twice; the later re-judge says PASS for all 3.
+    original = [_sampled("m", "t1", i, v) for i, v in enumerate(["FAIL", "FAIL", "PASS"])]
+    rejudge = [_sampled("m", "t1", i, "PASS") for i in range(3)]
+    row = compare.index_by_model(original + rejudge)["m"]["t1"]
+    assert row["consensus"]["n_samples"] == 3  # not 6
+    assert row["consensus"]["consensus"] == "PASS"  # the re-judge wins
+
+
+def test_tied_samples_are_ambiguous_regardless_of_order():
+    for order in (["PASS", "FAIL"], ["FAIL", "PASS"]):
+        rows = [_sampled("m", "t1", i, v) for i, v in enumerate(order)]
+        assert compare.index_by_model(rows)["m"]["t1"]["consensus"]["consensus"] == "AMBIGUOUS"
+
+
+def test_sample_variance_ignores_rejudge_duplicates():
+    from judges.meta_eval import sample_variance
+
+    rows = [_sampled("m", "t1", i, "FAIL") for i in range(3)]
+    rows += [_sampled("m", "t1", i, "PASS") for i in range(3)]
+    report = sample_variance(rows)["m::t1"]
+    assert report["n_samples"] == 3 and report["pass_rate"] == 1.0

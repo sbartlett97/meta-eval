@@ -9,6 +9,12 @@
 # Everything is checkpoint-driven, NOT runtime-quantization-driven: the checkpoint
 # version pins the exact behavior (see PRD "Why Pre-Quantized Checkpoints?").
 #
+# `family` is the architecture family (gemma / qwen / llama / ...), used to
+# check judge/model independence and to split same-family judge pairs in the
+# meta-evaluation. `name_claims_teacher` marks models whose name claims
+# training on another model's outputs (e.g. "Claude-Mythos"); it is a hint
+# from the name only, not a verified lineage.
+#
 # `base_model_id` / `quantization` (see docs/critical-assessment.md #1 and #7):
 # the whole point of a *behavioral-invariance* harness is measuring whether
 # fine-tuning or quantization changed behavior relative to a reference point --
@@ -46,22 +52,29 @@ local_models:
   - id: "gemma-4-12b"
     checkpoint: "unsloth/gemma-4-12b-it-GGUF"   # pre-quantized GGUF repo
     quantization: "Q4_K_M"
+    family: gemma
     base_model_id: null   # foundation checkpoint -- nothing to compare against
     size_gb: 7.12
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"              # llamacpp (in-process GGUF) | ollama
       gguf_file: "*Q4_K_M.gguf"       # glob; or an exact name like the example above
 
   - id: "Ornith-1.0-9B"
     checkpoint: "deepreinforce-ai/Ornith-1.0-9B-GGUF"         # pre-quantized GGUF repo
     quantization: "4-bit"
+    family: null   # model card names no base model; do not guess
     base_model_id: null   # foundation checkpoint
     size_gb: 5.63
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
+      # Thinks before answering; the chat template opens <think>, so replies
+      # are "<trace></think><answer>". 4096 is provisional [Sam, task 1.10]:
+      # at 512 most replies ended mid-trace with no answer.
+      reasoning: true
+      max_tokens: 4096
       engine: "llamacpp"
       gguf_file: "*Q4_K_M.gguf"
 
@@ -71,20 +84,22 @@ local_models:
   - id: "qwen3.5-9b"
     checkpoint: "unsloth/Qwen3.5-9B-GGUF"
     quantization: "Q4_K_M"
+    family: qwen
     base_model_id: null   # foundation checkpoint
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "*Q4_K_M.gguf"
 
   - id: "llama-3.1-8b"
     checkpoint: "unsloth/Llama-3.1-8B-Instruct-GGUF"
     quantization: "Q4_K_M"
+    family: llama
     base_model_id: null   # foundation checkpoint
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "*Q4_K_M.gguf"
 
@@ -96,41 +111,45 @@ local_models:
   - id: "qwen2.5-7b-instruct"
     checkpoint: "bartowski/Qwen2.5-7B-Instruct-GGUF"
     quantization: "Q4_K_M"
+    family: qwen
     base_model_id: null   # foundation checkpoint
     size_gb: 4.68
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "Qwen2.5-7B-Instruct-Q4_K_M.gguf"
 
   - id: "qwen2.5-7b-instruct-q8"
     checkpoint: "bartowski/Qwen2.5-7B-Instruct-GGUF"   # same repo, different quant
     quantization: "Q8_0"
+    family: qwen
     # Quantization-axis pair: identical weights to qwen2.5-7b-instruct, just a
     # higher quant level -- this is the harness's only quantization-only
     # comparison (every other base_model_id link here is a fine-tune).
     base_model_id: "qwen2.5-7b-instruct"
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "Qwen2.5-7B-Instruct-Q8_0.gguf"
 
   - id: "llama-3-8b-instruct"
     checkpoint: "bartowski/Meta-Llama-3-8B-Instruct-GGUF"
     quantization: "Q4_K_M"
+    family: llama
     base_model_id: null   # foundation checkpoint
     size_gb: 4.92
     context_tokens: 8192   # Llama 3 (not 3.1)'s native context is 8K
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
 
   - id: "llama-3-8b"
     checkpoint: "NousResearch/Meta-Llama-3-8B-GGUF"
     quantization: "Q4_K_M"
+    family: llama
     # The RAW (non-instruct) checkpoint -- confirmed via meta-llama/Meta-Llama-
     # 3-8B's own model card: no base_model tag at all, i.e. this genuinely is
     # a root foundation checkpoint, not "no info to link" like the null
@@ -142,21 +161,22 @@ local_models:
     context_tokens: 8192
     # No chat template on a raw base checkpoint -- it continues text rather
     # than answering it. See CLAUDE.md's "Chat vs completion" note.
-    mode: completion
     serving:
+      mode: completion
       engine: "llamacpp"
       gguf_file: "Meta-Llama-3-8B-Q4_K_M.gguf"
 
   - id: "Gemma-4-E4B-Uncensored-HauhauCS-Aggressive"
     checkpoint: "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive"
     quantization: "Q4_K_M"
+    family: gemma
     # "E4B" is a different Gemma size class than gemma-4-12b (12B) above, so it
     # is NOT assumed to share that base -- verify against the model card before
     # setting this.
     base_model_id: null
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "*Q4_K_M.gguf"
 
@@ -165,12 +185,19 @@ fine_tuned_models:
   - id: "qwythos-9b"
     checkpoint: "empero-ai/Qwythos-9B-Claude-Mythos-5-1M-GGUF"
     quantization: "BF16"
+    family: qwen
+    name_claims_teacher: "claude"   # from the model name only; unverified
     # Merge of multiple upstream models ("Claude-Mythos") -- no single base to
     # attribute; verify against the model card before setting this.
     base_model_id: null
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
+      # Thinks before answering; the chat template opens <think>, so replies
+      # are "<trace></think><answer>". 4096 is provisional [Sam, task 1.10]:
+      # at 512 most replies ended mid-trace with no answer.
+      reasoning: true
+      max_tokens: 4096
       engine: "llamacpp"
       gguf_file: "Qwythos-9B-Claude-Mythos-5-1M-BF16.gguf"
 
@@ -178,6 +205,7 @@ fine_tuned_models:
   - id: "llama-3.1-8b-abliterated"
     checkpoint: "bartowski/Meta-Llama-3.1-8B-Instruct-abliterated-GGUF"
     quantization: "Q4_K_M"
+    family: llama
     # Confirmed via the model card chain (checked live against the
     # HuggingFace API): bartowski's GGUF -> mlabonne/Meta-Llama-3.1-8B-
     # Instruct-abliterated (base_model in its card metadata) ->
@@ -187,14 +215,15 @@ fine_tuned_models:
     base_model_id: "llama-3.1-8b"
     size_gb: 4.92
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "Meta-Llama-3.1-8B-Instruct-abliterated-Q4_K_M.gguf"
 
   - id: "qwen2.5-coder-7b"
     checkpoint: "QuantFactory/Qwen2.5-Coder-7B-GGUF"
     quantization: "Q4_K_M"
+    family: qwen
     # The base Coder checkpoint BEFORE instruction-tuning -- confirmed via
     # Qwen/Qwen2.5-Coder-7B's own model card: base_model = Qwen/Qwen2.5-7B
     # (the raw, non-instruct 7B -- NOT qwen2.5-7b-instruct above, and not an
@@ -205,14 +234,15 @@ fine_tuned_models:
     base_model_id: null
     size_gb: 4.68
     context_tokens: 32768
-    mode: completion   # raw base checkpoint, no chat template
     serving:
+      mode: completion   # raw base checkpoint, no chat template
       engine: "llamacpp"
       gguf_file: "Qwen2.5-Coder-7B.Q4_K_M.gguf"
 
   - id: "qwen2.5-coder-7b-instruct"
     checkpoint: "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF"
     quantization: "Q4_K_M"
+    family: qwen
     # Confirmed via its own model card: base_model = Qwen/Qwen2.5-Coder-7B,
     # i.e. the qwen2.5-coder-7b entry above -- NOT qwen2.5-7b-instruct (a
     # different, one-hop-too-shallow link; see qwen2.5-coder-7b's comment for
@@ -221,14 +251,15 @@ fine_tuned_models:
     base_model_id: "qwen2.5-coder-7b"
     size_gb: 4.68
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "qwen2.5-coder-7b-instruct-q4_k_m.gguf"
 
   - id: "qwen2.5-coder-7b-instruct-abliterated"
     checkpoint: "bartowski/Qwen2.5-Coder-7B-Instruct-abliterated-GGUF"
     quantization: "Q4_K_M"
+    family: qwen
     # Inferred from the publisher's (huihui-ai, via bartowski's GGUF) own
     # naming convention -- no explicit base_model tag on huihui-ai's card to
     # confirm against, unlike llama-3.1-8b-abliterated above. Level 2 of the
@@ -240,14 +271,15 @@ fine_tuned_models:
     base_model_id: "qwen2.5-coder-7b-instruct"
     size_gb: 4.68
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "Qwen2.5-Coder-7B-Instruct-abliterated-Q4_K_M.gguf"
 
   - id: "openbiollm-llama3-8b"
     checkpoint: "bartowski/OpenBioLLM-Llama3-8B-GGUF"
     quantization: "Q4_K_M"
+    family: llama
     # NOT linked to llama-3-8b-instruct: its own model card
     # (aaditya/Llama3-OpenBioLLM-8B) names the RAW, non-instruct
     # meta-llama/Meta-Llama-3-8B as its base -- confirmed live. Points at the
@@ -258,51 +290,68 @@ fine_tuned_models:
     base_model_id: "llama-3-8b"
     size_gb: 4.92
     context_tokens: 8192
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "OpenBioLLM-Llama3-8B-Q4_K_M.gguf"
 
   - id: "Qwen3.5-9B-The-Defiant-Fable-Uncensored"
     checkpoint: "DavidAU/Qwen3.5-9B-The-Defiant-Fable-Uncensored-Heretic-NEO-IMATRIX-MAX-MTP-GGUF"
     quantization: "Q4_K_M"
+    family: qwen
+    name_claims_teacher: "claude"   # from the model name only; unverified
     base_model_id: "qwen3.5-9b"   # inferred from checkpoint name; verify against model card
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
+      # Thinks before answering; the chat template opens <think>, so replies
+      # are "<trace></think><answer>". 4096 is provisional [Sam, task 1.10]:
+      # at 512 most replies ended mid-trace with no answer.
+      reasoning: true
+      max_tokens: 4096
       engine: "llamacpp"
       gguf_file: "*NEO-MAX-Q4_K_M.gguf"
 
   - id: "Dolphin3-Cyber"
     checkpoint: "RavichandranJ/Dolphin3-Cyber-8B-GGUF"
     quantization: "Q4_K_M"
+    family: llama
     # Confirmed, not guessed: the repo's actual GGUF file is named
     # "Dolphin3.0-Llama3.1-8B-abliterated.Q4_K_M.gguf" (checked live against
     # the HuggingFace API), which names the base directly.
     base_model_id: "llama-3.1-8b"
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "*Q4_K_M.gguf"
 
   - id: "gemma-4-12B-agentic-fable5"
     checkpoint: "yuxinlu1/gemma-4-12B-agentic-fable5-composer2.5-v2-3.5x-tau2-GGUF"
     quantization: "Q4_K_M"
+    family: gemma
+    name_claims_teacher: "claude"   # from the model name only; unverified
     base_model_id: "gemma-4-12b"   # checkpoint name explicitly starts with the base
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
       engine: "llamacpp"
       gguf_file: "*Q4_K_M.gguf"
 
   - id: "Qwopus3.5-9B-Coder"
     checkpoint: "Jackrong/Qwopus3.5-9B-Coder-GGUF"
     quantization: "Q4_K_M"
+    family: qwen
+    name_claims_teacher: "claude"   # from the model name only; unverified
     base_model_id: "qwen3.5-9b"   # inferred from checkpoint name; verify against model card
     context_tokens: 32768
-    mode: chat
     serving:
+      mode: chat
+      # Thinks before answering; the chat template opens <think>, so replies
+      # are "<trace></think><answer>". 4096 is provisional [Sam, task 1.10]:
+      # at 512 most replies ended mid-trace with no answer.
+      reasoning: true
+      max_tokens: 4096
       engine: "llamacpp"
       gguf_file: "*Q4_K_M.gguf"
 #

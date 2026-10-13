@@ -17,6 +17,7 @@ from judges.prompts import format_judge_prompt, parse_json_from_response
 
 class ClaudeJudge(Judge):
     provider = "anthropic"
+    credential_env = "ANTHROPIC_API_KEY"
 
     def __init__(
         self,
@@ -37,6 +38,17 @@ class ClaudeJudge(Judge):
         self.retry_backoff_s = retry_backoff_s
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         self._client = None  # lazily constructed
+
+    def has_credentials(self) -> bool:
+        return bool(self._api_key)
+
+    def describe(self) -> dict:
+        return {
+            **super().describe(),
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+        }
 
     def _ensure_client(self):
         if self._client is not None:
@@ -77,7 +89,7 @@ class ClaudeJudge(Judge):
         parsed = parse_json_from_response(text)
 
         return Verdict(
-            verdict=parsed.get("verdict", "AMBIGUOUS"),
+            verdict=parsed.get("verdict"),  # missing -> ValueError -> error, not AMBIGUOUS
             confidence=parsed.get("confidence", 0.0),
             judge_id=self.id,
             test_id=test_id,

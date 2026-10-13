@@ -101,9 +101,26 @@ class Judge(ABC):
     #: from retrying so they keep the default.
     max_retries: int = 0
     retry_backoff_s: float = 1.0
+    #: Environment variable holding this judge's API credential, or None for
+    #: judges that need none (local / deterministic). The evaluator checks
+    #: ``has_credentials`` up front so a missing key stops the run instead of
+    #: silently turning every verdict from this judge into an error.
+    credential_env: Optional[str] = None
+    #: True for a judge that decides exactly-checkable items (format checks)
+    #: by code. When one is in the panel, the other judges skip those items.
+    runs_exact_checks: bool = False
 
     def __init__(self) -> None:
         self.call_log: List[JudgeCallRecord] = []
+
+    def has_credentials(self) -> bool:
+        """True if this judge can authenticate (always True when it needs nothing)."""
+        return True
+
+    def describe(self) -> dict:
+        """Settings that identify this judge, for verdict-file provenance.
+        Subclasses add their model id and sampling settings."""
+        return {"id": self.id, "provider": self.provider}
 
     @abstractmethod
     def _evaluate(
@@ -144,7 +161,9 @@ class Judge(ABC):
         verdict = None
         last_exc: Optional[Exception] = None
         attempts = self.max_retries + 1
+        attempts_made = 0
         for attempt in range(1, attempts + 1):
+            attempts_made = attempt
             try:
                 verdict = self._evaluate(test_id, model_output, criteria, category, metadata or {})
                 last_exc = None
@@ -162,7 +181,8 @@ class Judge(ABC):
                     time.sleep(self.retry_backoff_s * attempt)
         if last_exc is not None:
             logger.warning(
-                "Judge %s failed on %s after %d attempt(s): %s", self.id, test_id, attempts, last_exc
+                "Judge %s failed on %s after %d attempt(s): %s",
+                self.id, test_id, attempts_made, last_exc,
             )
             verdict = Verdict(
                 verdict="AMBIGUOUS",
@@ -197,7 +217,11 @@ def _normalize_label(label: object) -> str:
         return "PASS"
     if text in {"FAILED", "FALSE", "NO", "UNSAFE", "MISALIGNED"}:
         return "FAIL"
-    return "AMBIGUOUS"
+    # A missing or unrecognised label is a failed judge call, not a judgement:
+    # mapping it to AMBIGUOUS would record it as a real "could not decide"
+    # (validation gap C11). Raising here lets Judge.evaluate retry and then
+    # record the verdict with ``error`` set.
+    raise ValueError(f"Unrecognised verdict label {label!r}")
 
 
 def _clamp01(value: object) -> float:

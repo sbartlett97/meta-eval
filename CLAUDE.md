@@ -92,8 +92,11 @@ docs/critical-assessment.md  # the audit this round of fixes addresses
   is self-grading, and silently invalidates any judge-bias analysis. The two
   local judges are deliberately different checkpoints (verified live against
   the HuggingFace API — real, ungated, instruct-tuned) from every model under
-  test. Keep this invariant when editing either config; `tests/test_compare.py`
-  and the judges config itself document why.
+  test. Keep this invariant when editing either config;
+  `tests/test_judge_independence.py` enforces it. Every model and judge also
+  declares a `family` (architecture), and models whose name claims a teacher
+  (e.g. "Claude-Mythos") carry `name_claims_teacher`, so the meta-evaluation
+  can report same-family judge/model pairs separately.
 - **`system_prompt` and multi-turn (`turns`) are real, not suite metadata that
   gets silently dropped.** `TestCase` (`harness/test_suite.py`) carries both;
   `TestRunner` sends `system_prompt` through `generate()`/`generate_conversation()`
@@ -123,13 +126,23 @@ docs/critical-assessment.md  # the audit this round of fixes addresses
   way.** `error` means the judge *call* failed (network, auth, malformed
   JSON). `abstained` means the call succeeded but the judge is *structurally
   incapable* of assessing this criterion — `HeuristicJudge` sets it on the
-  ~22-of-61-case AMBIGUOUS it returns for factual/reasoning criteria a keyword
-  scan can't verify (see `judges/heuristic_judge.py`'s docstring). Conflating
+  AMBIGUOUS it returns for factual/reasoning criteria a keyword scan can't
+  verify, and by default on **all** its refusal verdicts (`refusal_votes:
+  false`): those are recorded as advisory but never vote, because keyword
+  refusal detection is too unreliable to count. Only its deterministic format
+  checks vote. There is no default meta-eval reference judge
+  (`--reference-judge` is optional). Conflating
   either with a genuine verdict would count it as real agreement/disagreement.
   `aggregate_verdicts` (`judges/judge_panel.py`), `judges.meta_eval._ok_verdicts`,
   and `harness.compare._resolve_verdict` all exclude verdicts with `error` OR
   `abstained` set — extend all three together if you add a fourth "not a real
-  verdict" case, don't patch just one.
+  verdict" case, don't patch just one. When no real verdict is left, the
+  result is `None` (missing data), never `"AMBIGUOUS"`: `aggregate_verdicts`
+  returns `consensus: None`, a failed generation gets `consensus: None` plus
+  `generation_error`, and `compare_pair` / `sample_variance` drop `None` and
+  report how many they dropped. A genuine AMBIGUOUS (the judge read the
+  response and could not decide) stays in the pass-rate denominator as a
+  non-pass, and `compare_pair` reports its count.
 - **Heavy deps are imported lazily** inside the method that needs them (`anthropic`,
   `openai`, `llama_cpp`, `huggingface_hub`), each with a clear install message on
   `ImportError`. Preserve this pattern — the core `pip install -r requirements.txt`
@@ -139,6 +152,27 @@ docs/critical-assessment.md  # the audit this round of fixes addresses
   kwargs come from `hardware_profile.yaml → llamacpp_defaults` via
   `llamacpp_engine.engine_kwargs_from_profile` (which filters to valid constructor
   keys); the resident-model cap comes from `llamacpp.max_resident`.
+  Each model and local judge is served at `min(context_tokens,
+  llamacpp.max_n_ctx)` (`llamacpp_engine.n_ctx_for`); `llamacpp_defaults.n_ctx`
+  is only the fallback for entries without `context_tokens`.
+- **Reasoning traces are split from the answer** (`harness/reasoning.py`,
+  decision D2). Models with `serving.reasoning: true` get their chat template
+  to open `<think>`, so replies arrive as `<trace></think><answer>`, and a reply
+  with no closing tag is an unfinished trace. Output rows carry `output` (the
+  final answer, which judges score), plus `reasoning`, `raw_replies` (one per
+  turn, like `turns`) and `reasoning_complete`. A row whose trace was cut off
+  with no answer is not judged; it gets `generation_error` like a failed
+  generation. Give these models a larger `serving.max_tokens`.
+- **Truncation is recorded, not guessed.** llama.cpp (`finish_reason`) and
+  Ollama (`done_reason`) report why each turn ended. Models expose this as
+  `last_finish_reasons`, and `TestRunner` writes `finish_reasons` and
+  `truncated` (any turn ended with `"length"`) on every output row.
+- **Exact checks decide exactly-checkable items.** When the panel has a judge
+  with `runs_exact_checks` (the heuristic), every other judge skips items
+  where `heuristic_judge.exact_check_applies` is true (format items with a
+  registered check and no "must refuse" directive): they record an abstained
+  "Skipped" verdict without making a call. With no such judge in the panel,
+  nothing is skipped.
 - **Judge panel evaluates judge-outer, not row-outer.** `JudgePanel.evaluate_batch`
   runs one judge over the *whole* batch of outputs before moving to the next
   judge, so each local llama.cpp judge loads once per run instead of once per
@@ -160,10 +194,12 @@ docs/critical-assessment.md  # the audit this round of fixes addresses
   behavioral-invariance diff; nothing else in the codebase does this
   automatically.
 - **Repeated sampling (`--n-samples`) tags rows with `sample_index`.**
-  `harness.compare.index_by_model` distinguishes a genuine multi-sample group
-  (distinct `sample_index` values → collapsed via majority vote) from a
-  re-judge overwrite (same `sample_index` → latest file wins) — don't collapse
-  these the same way if you touch that function. The collapse is done
+  `harness.compare.index_by_model` first keeps only the latest row per
+  (model, test_id, sample_index) (`judges.meta_eval.latest_per_sample`, so a
+  re-judge file never counts as extra samples), then collapses distinct
+  `sample_index` values via majority vote. Every tie for first place — among
+  samples (`majority_label`) or among judges (`aggregate_verdicts`) — is
+  `"AMBIGUOUS"`, never broken by order or by confidence. The collapse is done
   **per `verdict_source`**: `index_by_model(rows, verdict_source=...)` must be
   called with the same `verdict_source` you'll later pass to `compare_pair`/
   `compare_all` (the CLI does this correctly; a caller that indexes on
@@ -174,8 +210,12 @@ docs/critical-assessment.md  # the audit this round of fixes addresses
 ## Common commands
 
 ```bash
-pip install -r requirements.txt          # core deps (pure-Python; incl. huggingface_hub)
-pip install llama-cpp-python             # local GGUF backend (engine/access: llamacpp)
+pip install -r requirements.lock         # exact tested versions (Python 3.14; incl. llama-cpp-python)
+pip install -r requirements.txt          # or: core deps as ranges (pure-Python; incl. huggingface_hub)
+pip install -r requirements-llamacpp.txt # local GGUF backend, pinned (engine/access: llamacpp)
+# Regenerate the lock after changing requirements*.txt, from the tested venv:
+#   uv pip compile requirements.txt requirements-llamacpp.txt --python-version 3.14 \
+#     -c <(.venv/bin/pip freeze) -o requirements.lock
 
 pytest                                    # run the (network-free) unit tests
 pytest tests/test_prompts.py              # run a single test file
@@ -184,9 +224,12 @@ pytest tests/test_prompts.py -k parse     # run a single test by name
 # Full run: hydrate → generate → judge (+ judge_meta_eval.json)
 python harness/evaluator.py --models gemma-4-12b --judges all
 python harness/evaluator.py --outputs results/model_outputs.json --judges cheap   # re-judge
+python harness/evaluator.py --outputs old.json --allow-legacy   # judge a pre-fix outputs file anyway (refused by default)
 python harness/evaluator.py --models gemma-4-12b --no-judge                    # generate only
 python harness/evaluator.py --models gemma-4-12b --judges cheap --no-hydrate   # skip HF download
-python harness/evaluator.py --models gemma-4-12b --n-samples 3                 # repeated sampling
+python harness/evaluator.py --models gemma-4-12b --n-samples 1 --seed 7        # one sample (default is 3); sample i uses seed 7+i
+python harness/evaluator.py --models gemma-4-12b --resume      # continue a crashed run from its checkpoint
+python harness/evaluator.py --models gemma-4-12b --overwrite   # replace an existing outputs file
 
 python harness/hydrate.py --dry-run       # list open weights that would be downloaded
 
@@ -197,10 +240,16 @@ python harness/compare.py --verdicts results/model_verdicts.json
 `--judges` presets: `all` (every enabled judge), `cheap` (priority ≤ 1 — the
 remote API judges and the free deterministic heuristic; **no local GGUF
 loads**), `pilot`.
+`--judge-ids a,b` picks judges by id instead; it overrides the preset and the
+`enabled` flag. Selection lives in one place, `judges.factory.select_judge_entries`,
+which both the panel and hydration use.
 
 ## Environment
 
 - `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` — only for the respective remote judges.
+  The CLIs load them from the gitignored `.env` (`harness/env.py`, python-dotenv;
+  variables already set in the shell win). The evaluator exits with code 2
+  before any generation or judging if an enabled judge has no key.
 - `HF_TOKEN` — for gated HF repos that hydration downloads. None of the
   shipped `config/models.yaml` / `config/judges.yaml` checkpoints are gated
   (verified live against the HuggingFace API) — only needed if you add one.

@@ -30,10 +30,12 @@ judges:
   # ---- Remote judges (hosted API) -- the trusted, model-independent anchor --
   # Enabled by default: without at least one judge that cannot possibly share
   # weights with a model under test, judge-bias meta-evaluation is meaningless.
-  # Requires ANTHROPIC_API_KEY / OPENAI_API_KEY; a judge that can't authenticate
-  # fails closed to an AMBIGUOUS verdict (Judge.evaluate), it does not abort the
-  # run -- see #2.9 in the assessment for why that's still worth fixing.
+  # Requires ANTHROPIC_API_KEY / OPENAI_API_KEY (from the environment or the
+  # gitignored .env, loaded by harness/env.py). The evaluator stops before any
+  # generation or judging if an enabled judge has no key
+  # (harness.evaluator.require_credentials).
   - id: "claude-sonnet-4-6"
+    family: claude
     provider: "anthropic"
     model: "claude-sonnet-4-6"
     access: "api"
@@ -42,6 +44,7 @@ judges:
     enabled: true
 
   - id: "gpt-4o"
+    family: gpt
     provider: "openai"
     model: "gpt-4o"
     access: "api"
@@ -61,30 +64,35 @@ judges:
   # filename doesn't match, so an unverified name here would abort the whole
   # `--judges all` run before any output is generated.
   - id: "mistral-7b-local"
+    family: mistral
     provider: "local"
     model: "bartowski/Mistral-7B-Instruct-v0.3-GGUF"
     access: "llamacpp"
     gguf_file: "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf"
+    context_tokens: 32768   # model maximum; served at min(this, llamacpp.max_n_ctx)
     cost_per_1k_tokens: 0.0
     priority: 2
     enabled: true
 
   - id: "llama-3.2-3b-local"
+    family: llama
     provider: "local"
     model: "bartowski/Llama-3.2-3B-Instruct-GGUF"
     access: "llamacpp"
     gguf_file: "Llama-3.2-3B-Instruct-Q4_K_M.gguf"
+    context_tokens: 131072   # model maximum; served at min(this, llamacpp.max_n_ctx)
     cost_per_1k_tokens: 0.0
     priority: 2
     enabled: true
 
   # ---- Deterministic baseline ------------------------------------------
-  # Zero cost, zero network, no weights -- the one judge guaranteed independent
-  # of every model under test. See judges/heuristic_judge.py: it now deterministically
-  # checks refusal-consistency/jailbreak-susceptibility (keyword + expect:PASS|FAIL
-  # directive) and format-adherence (real JSON/CSV/sentence-count/markdown/python
-  # checks) rather than degrading to AMBIGUOUS on most of the suite.
+  # Zero cost, zero network, no weights. Its format-adherence checks are exact
+  # (JSON/CSV/sentence-count/markdown/python) and vote. Its refusal verdicts
+  # (pattern scan + expect:PASS|FAIL directive) are advisory only: recorded
+  # with abstained=true, so they never vote or count in agreement statistics.
+  # Set refusal_votes: true to make them vote. See judges/heuristic_judge.py.
   - id: "heuristic-baseline"
+    family: null   # not a model
     provider: "deterministic"
     access: "none"
     cost_per_1k_tokens: 0.0

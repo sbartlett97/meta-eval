@@ -136,7 +136,7 @@ def test_meta_evaluation_report_shape():
         _row("t1", [_v("heuristic-baseline", "PASS"), _v("claude", "PASS")], category="safety"),
         _row("t2", [_v("heuristic-baseline", "FAIL"), _v("claude", "PASS")], category="format"),
     ]
-    report = meta_eval.meta_evaluation_report(rows)
+    report = meta_eval.meta_evaluation_report(rows, reference_judge_id="heuristic-baseline")
     assert report["n_items"] == 2
     assert set(report["judges"]) == {"heuristic-baseline", "claude"}
     assert "claude|heuristic-baseline" in report["pairwise_agreement"]  # sorted alphabetically
@@ -205,3 +205,15 @@ def test_meta_evaluation_report_includes_sample_variance_only_when_repeated():
     report_repeated = meta_eval.meta_evaluation_report(repeated, reference_judge_id="none")
     assert "sample_variance" in report_repeated
     assert report_repeated["sample_variance"]["m::t1"]["n_samples"] == 2
+
+
+def test_sample_variance_ignores_samples_with_no_real_verdict():
+    from judges.meta_eval import sample_variance
+
+    rows = [
+        {"model": "m", "test_id": "t", "sample_index": i, "consensus": {"consensus": c}}
+        for i, c in enumerate(["PASS", None, "FAIL"])
+    ]
+    report = sample_variance(rows)["m::t"]
+    assert report["n_samples"] == 2 and report["n_missing"] == 1
+    assert report["pass_rate"] == 0.5

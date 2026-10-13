@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from judges.base import Judge, Verdict
+from judges.heuristic_judge import exact_check_applies
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,11 @@ class EvalItem:
     #: needs -- see judges/format_checks.py -- without a judge having to parse
     #: them back out of the English ``criteria`` prose.
     metadata: Dict[str, Any] = field(default_factory=dict)
+    #: The user turn(s) the model answered (one for a single-turn case) and
+    #: the system prompt it ran under. A judge that sees only the response
+    #: cannot tell whether it fits the request.
+    turns: Tuple[str, ...] = ()
+    system_prompt: Optional[str] = None
 
 
 @dataclass
@@ -54,6 +60,8 @@ class JudgePanel:
         if not judges:
             raise ValueError("JudgePanel requires at least one judge")
         self.judges = list(judges)
+        # Only skip exactly-checkable items when a judge here will decide them.
+        self._has_exact_judge = any(j.runs_exact_checks for j in self.judges)
 
     def evaluate(
         self,
@@ -64,11 +72,8 @@ class JudgePanel:
         metadata: Dict[str, Any] | None = None,
     ) -> PanelResult:
         """Run every judge on one output. Judge errors are captured, not raised."""
-        verdicts = [
-            judge.evaluate(test_id, model_output, criteria, category, metadata or {})
-            for judge in self.judges
-        ]
-        return PanelResult(test_id=test_id, verdicts=verdicts)
+        item = EvalItem(test_id, model_output, criteria, category, metadata or {})
+        return PanelResult(test_id=test_id, verdicts=[self._judge(j, item) for j in self.judges])
 
     def evaluate_batch(self, items: Sequence[EvalItem]) -> List[PanelResult]:
         """Evaluate many outputs **judge-outer, item-inner**.
@@ -84,16 +89,33 @@ class JudgePanel:
         results = [PanelResult(test_id=item.test_id) for item in items]
         for judge in self.judges:
             for item, result in zip(items, results):
-                result.verdicts.append(
-                    judge.evaluate(
-                        item.test_id,
-                        item.model_output,
-                        item.criteria,
-                        item.category,
-                        item.metadata,
-                    )
-                )
+                result.verdicts.append(self._judge(judge, item))
         return results
+
+    def _judge(self, judge: Judge, item: EvalItem) -> Verdict:
+        """One judge's verdict on one item.
+
+        An item with an exact deterministic check (a format check) is decided
+        by the judge that runs it. The other judges skip it without a call and
+        record an abstained verdict, so they neither outvote the exact check
+        nor spend tokens on it (validation gap C12).
+        """
+        if (
+            self._has_exact_judge
+            and not judge.runs_exact_checks
+            and exact_check_applies(item.category, item.criteria, item.metadata)
+        ):
+            return Verdict(
+                verdict="AMBIGUOUS",
+                confidence=0.0,
+                judge_id=judge.id,
+                test_id=item.test_id,
+                rationale="Skipped: an exact deterministic check decides this item.",
+                abstained=True,
+            )
+        return judge.evaluate(
+            item.test_id, item.model_output, item.criteria, item.category, item.metadata
+        )
 
     def cost_summary(self) -> Dict[str, dict]:
         """Aggregate per-judge latency/token stats from call logs."""
@@ -137,23 +159,28 @@ def aggregate_verdicts(result: PanelResult) -> dict:
     n_abstained = sum(1 for v in result.verdicts if v.error is None and v.abstained)
 
     counts: Dict[str, int] = {}
-    conf: Dict[str, float] = {}
     for v in ok_verdicts:
         counts[v.verdict] = counts.get(v.verdict, 0) + 1
-        conf[v.verdict] = conf.get(v.verdict, 0.0) + v.confidence
     if not counts:
+        # No judge gave a real verdict (all errored or abstained). This is
+        # missing data, not a judgement: None, so downstream rates drop the
+        # item instead of counting it as a non-pass.
         return {
             "test_id": result.test_id,
-            "consensus": "AMBIGUOUS",
+            "consensus": None,
             "agreement": 0.0,
             "n_judges": 0,
             "n_errored": n_errored,
             "n_abstained": n_abstained,
         }
 
-    # Break ties by summed confidence.
-    consensus = max(counts, key=lambda label: (counts[label], conf[label]))
-    agreement = counts[consensus] / len(ok_verdicts)
+    # A tie for first place is AMBIGUOUS. Breaking it by summed confidence
+    # would favour whichever judge reports higher confidence, and confidence
+    # scales differ between judges (validation gap C10).
+    top = max(counts.values())
+    leaders = [label for label, n in counts.items() if n == top]
+    consensus = leaders[0] if len(leaders) == 1 else "AMBIGUOUS"
+    agreement = top / len(ok_verdicts)
     return {
         "test_id": result.test_id,
         "consensus": consensus,

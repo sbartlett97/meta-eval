@@ -152,3 +152,16 @@ def test_hydrate_dry_run_downloads_nothing(monkeypatch):
          "serving": {"engine": "llamacpp", "gguf_file": "a.gguf"}}]}
     hydrated = hydrate.hydrate_weights(models_config=models, judges_config={}, dry_run=True)
     assert hydrated == ["org/a"]
+
+
+def test_collect_weights_judge_ids_hydrates_only_the_named_judges():
+    judges = {
+        "judges": [
+            {"id": "j1", "access": "llamacpp", "model": "org/j1", "priority": 2},
+            {"id": "j2", "access": "llamacpp", "model": "org/j2", "priority": 2},
+            # Disabled, but named explicitly -> still hydrated.
+            {"id": "j3", "access": "llamacpp", "model": "org/j3", "enabled": False},
+        ]
+    }
+    specs = hydrate.collect_weights({}, judges, model_ids=[], judge_ids=["j3", "j1"])
+    assert sorted(s.repo_id for s in specs) == ["org/j1", "org/j3"]

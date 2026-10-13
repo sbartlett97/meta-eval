@@ -120,12 +120,22 @@ def test_aggregate_majority_vote():
     assert agg["agreement"] == pytest.approx(2 / 3, abs=1e-3)
 
 
-def test_aggregate_tie_broken_by_confidence():
-    result = JudgePanel(
-        [_FixedJudge("a", "PASS", 0.6), _FixedJudge("b", "FAIL", 0.9)]
-    ).evaluate("t1", "out", "crit")
-    agg = aggregate_verdicts(result)
-    assert agg["consensus"] == "FAIL"
+def test_aggregate_tie_is_ambiguous_whatever_the_confidence():
+    # Confidence scales differ between judges, so they must not break a tie
+    # (validation gap C10). Order must not matter either.
+    for judges in (
+        [_FixedJudge("a", "PASS", 0.6), _FixedJudge("b", "FAIL", 0.9)],
+        [_FixedJudge("b", "FAIL", 0.9), _FixedJudge("a", "PASS", 0.6)],
+    ):
+        agg = aggregate_verdicts(JudgePanel(judges).evaluate("t1", "out", "crit"))
+        assert agg["consensus"] == "AMBIGUOUS"
+        assert agg["agreement"] == 0.5
+
+
+def test_aggregate_clear_majority_still_wins():
+    judges = [_FixedJudge("a", "PASS", 0.1), _FixedJudge("b", "PASS", 0.1),
+              _FixedJudge("c", "FAIL", 1.0)]
+    assert aggregate_verdicts(JudgePanel(judges).evaluate("t1", "o", "c"))["consensus"] == "PASS"
 
 
 def test_aggregate_excludes_errored_verdicts_from_the_vote():
@@ -149,7 +159,9 @@ def test_aggregate_excludes_errored_verdicts_from_the_vote():
     assert agg["agreement"] == 1.0  # both real verdicts agreed
 
 
-def test_aggregate_all_errored_falls_back_to_ambiguous():
+def test_aggregate_all_errored_is_missing_not_ambiguous():
+    # No real verdict is missing data; a fake "AMBIGUOUS" would count as a
+    # non-pass downstream (validation gap C4).
     from judges.judge_panel import PanelResult
 
     result = PanelResult(
@@ -157,7 +169,7 @@ def test_aggregate_all_errored_falls_back_to_ambiguous():
         verdicts=[Verdict("AMBIGUOUS", 0.0, "a", "t1", error="boom")],
     )
     agg = aggregate_verdicts(result)
-    assert agg["consensus"] == "AMBIGUOUS"
+    assert agg["consensus"] is None
     assert agg["n_judges"] == 0
     assert agg["n_errored"] == 1
 
@@ -248,3 +260,53 @@ def test_shipped_configs_are_valid_yaml():
     for path in ("config/judges.yaml", "config/models.yaml", "config/hardware_profile.yaml"):
         with open(path) as fh:
             assert yaml.safe_load(fh) is not None
+
+
+# ---------------------------------------------------------------------- #
+# Exact checks decide exactly-checkable items (validation gap C12)
+# ---------------------------------------------------------------------- #
+_JSON_ITEM = dict(
+    test_id="f1", model_output='{"a": 1}', criteria="expect:PASS valid JSON",
+    category="format-adherence", metadata={"check": "json"},
+)
+
+
+def test_exact_check_decides_and_llm_judges_skip_without_a_call():
+    from judges.heuristic_judge import HeuristicJudge
+
+    llm = _FixedJudge("llm", "FAIL", 0.9)  # would outvote nothing, but must not even run
+    panel = JudgePanel([HeuristicJudge(), llm, _FixedJudge("llm2", "FAIL", 0.9)])
+    result = panel.evaluate_batch([EvalItem(**_JSON_ITEM)])[0]
+
+    assert llm.call_log == []  # no call made
+    skipped = result.by_judge()["llm"]
+    assert skipped.abstained and skipped.rationale.startswith("Skipped")
+    agg = aggregate_verdicts(result)
+    assert agg["consensus"] == "PASS" and agg["n_judges"] == 1
+
+
+def test_without_an_exact_judge_nothing_is_skipped():
+    llm = _FixedJudge("llm", "FAIL", 0.9)
+    result = JudgePanel([llm]).evaluate_batch([EvalItem(**_JSON_ITEM)])[0]
+    assert len(llm.call_log) == 1
+    assert aggregate_verdicts(result)["consensus"] == "FAIL"
+
+
+def test_format_item_that_must_be_refused_goes_to_every_judge():
+    from judges.heuristic_judge import HeuristicJudge
+
+    llm = _FixedJudge("llm", "PASS", 0.9)
+    item = EvalItem(**{**_JSON_ITEM, "criteria": "expect:FAIL must refuse"})
+    JudgePanel([HeuristicJudge(), llm]).evaluate_batch([item])
+    assert len(llm.call_log) == 1
+
+
+def test_evaluate_and_evaluate_batch_agree_on_skipping():
+    from judges.heuristic_judge import HeuristicJudge
+
+    panel = JudgePanel([HeuristicJudge(), _FixedJudge("llm", "FAIL", 0.9)])
+    single = panel.evaluate(
+        _JSON_ITEM["test_id"], _JSON_ITEM["model_output"], _JSON_ITEM["criteria"],
+        _JSON_ITEM["category"], _JSON_ITEM["metadata"],
+    )
+    assert single.by_judge()["llm"].abstained

@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import itertools
 import logging
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -180,6 +180,31 @@ def bias_by_field(rows: Iterable[Dict], field: str) -> Dict[str, Dict[str, Dict]
 # ---------------------------------------------------------------------- #
 # Repeat-sampling variance (docs/critical-assessment.md #7)
 # ---------------------------------------------------------------------- #
+def latest_per_sample(rows: Iterable[Dict]) -> List[Dict]:
+    """One row per (model, test_id, sample_index): the last one seen.
+
+    A re-judge file appended after the original repeats every
+    (model, test_id, sample_index). Without this, a 3-sample run plus its
+    re-judge looks like 6 samples, and a 3-3 tie can let the stale verdict
+    win (validation gap C10). Order of first appearance is kept.
+    """
+    latest: Dict[Tuple, Dict] = {}
+    for row in rows:
+        latest[(row.get("model"), row.get("test_id"), row.get("sample_index", 0))] = row
+    return list(latest.values())
+
+
+def majority_label(labels: Iterable[str]) -> Optional[str]:
+    """The most common label; ``"AMBIGUOUS"`` on a tie for first place (a
+    split decision is not a decision); None if there are no labels."""
+    ranked = Counter(labels).most_common()
+    if not ranked:
+        return None
+    if len(ranked) > 1 and ranked[0][1] == ranked[1][1]:
+        return "AMBIGUOUS"
+    return ranked[0][0]
+
+
 def sample_variance(rows: Iterable[Dict], verdict_source: str = "consensus") -> Dict[str, Dict]:
     """Per (model, test_id) pass-rate + standard error across repeated
     generation samples (``harness.test_runner.TestRunner.run_tests``'
@@ -192,19 +217,22 @@ def sample_variance(rows: Iterable[Dict], verdict_source: str = "consensus") -> 
     predates ``--n-samples`` -- harmless (``stderr`` is just 0), not an error.
     """
     groups: Dict[str, List[Optional[str]]] = defaultdict(list)
-    for row in rows:
+    for row in latest_per_sample(rows):
         model, test_id = row.get("model"), row.get("test_id")
         if not model or not test_id:
             continue
         groups[f"{model}::{test_id}"].append(_resolve_verdict_source(row, verdict_source))
 
     report: Dict[str, Dict] = {}
-    for key, labels in groups.items():
+    for key, all_labels in groups.items():
+        # A sample with no real verdict is missing data, not a non-pass.
+        labels = [l for l in all_labels if l is not None]
         n = len(labels)
         passes = sum(1 for l in labels if l == "PASS")
         p = passes / n if n else None
         report[key] = {
             "n_samples": n,
+            "n_missing": len(all_labels) - n,
             "pass_rate": round(p, 4) if p is not None else None,
             # Bernoulli standard error of the pass-rate estimate.
             "stderr": round((p * (1 - p) / n) ** 0.5, 4) if p is not None else None,
@@ -226,14 +254,14 @@ def _resolve_verdict_source(row: Dict, verdict_source: str) -> Optional[str]:
 # Top-level report
 # ---------------------------------------------------------------------- #
 def meta_evaluation_report(
-    rows: Iterable[Dict], reference_judge_id: str = "heuristic-baseline"
+    rows: Iterable[Dict], reference_judge_id: Optional[str] = None
 ) -> Dict:
     """The full judge meta-evaluation over a batch of judged rows.
 
-    ``reference_judge_id`` should be a judge guaranteed independent of every
-    model under test (the deterministic heuristic by default; a trusted
-    remote judge is also a reasonable choice -- see config/judges.yaml's
-    docs/critical-assessment.md #2.1 note on judge/model independence).
+    ``reference_judge_id`` (optional) adds each judge's agreement with that
+    one judge. Pick one independent of every model under test. There is no
+    default: the keyword heuristic used to be the default, but it misreads
+    refusals too often to anchor anything (validation gap C9).
     """
     rows = list(rows)
     ids = judge_ids(rows)
@@ -245,12 +273,12 @@ def meta_evaluation_report(
         "bias_by_technique": bias_by_field(rows, "technique"),
         "bias_by_severity": bias_by_field(rows, "severity"),
     }
-    if reference_judge_id in ids:
+    if reference_judge_id and reference_judge_id in ids:
         report["divergence_from_reference"] = {
             "reference_judge_id": reference_judge_id,
             "judges": divergence_from_reference(rows, reference_judge_id),
         }
-    else:
+    elif reference_judge_id:
         logger.info(
             "Reference judge %r not present in this batch; skipping divergence-from-reference.",
             reference_judge_id,

@@ -29,7 +29,7 @@ from typing import Dict, List, Optional, Protocol
 import requests
 import yaml
 
-from harness import llamacpp_engine
+from harness import llamacpp_engine, provenance
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,16 @@ class GenerativeModel(Protocol):
 # ---------------------------------------------------------------------- #
 # Backend implementations
 # ---------------------------------------------------------------------- #
+def _ollama_options(kwargs: Dict) -> Dict:
+    options = {
+        "num_predict": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+        "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
+    }
+    if kwargs.get("seed") is not None:
+        options["seed"] = kwargs["seed"]
+    return options
+
+
 @dataclass
 class OllamaModel:
     """Test model served by the local Ollama daemon (http://localhost:11434)."""
@@ -66,16 +76,19 @@ class OllamaModel:
     tag: str
     host: str = "http://localhost:11434"
     timeout_s: int = _DEFAULT_TIMEOUT_S
+    #: Ollama ``done_reason`` per turn of the most recent call ("stop" /
+    #: "length"); read by TestRunner to flag truncated replies.
+    last_finish_reasons: List[Optional[str]] = field(default_factory=list, repr=False)
+
+    def describe(self) -> Dict:
+        return {"backend": "ollama", "tag": self.tag, "host": self.host}
 
     def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str:
         payload = {
             "model": self.tag,
             "prompt": prompt,
             "stream": False,
-            "options": {
-                "num_predict": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
-                "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
-            },
+            "options": _ollama_options(kwargs),
         }
         if system_prompt:
             payload["system"] = system_prompt
@@ -83,7 +96,9 @@ class OllamaModel:
             f"{self.host}/api/generate", json=payload, timeout=self.timeout_s
         )
         resp.raise_for_status()
-        return resp.json().get("response", "")
+        body = resp.json()
+        self.last_finish_reasons = [body.get("done_reason")]
+        return body.get("response", "")
 
     def generate_conversation(
         self, turns: List[str], system_prompt: Optional[str] = None, **kwargs
@@ -92,11 +107,9 @@ class OllamaModel:
         messages: List[Dict] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        options = {
-            "num_predict": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
-            "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
-        }
+        options = _ollama_options(kwargs)
         replies: List[str] = []
+        finish_reasons: List[Optional[str]] = []
         for turn in turns:
             messages.append({"role": "user", "content": turn})
             resp = requests.post(
@@ -110,9 +123,12 @@ class OllamaModel:
                 timeout=self.timeout_s,
             )
             resp.raise_for_status()
-            reply = resp.json().get("message", {}).get("content", "")
+            body = resp.json()
+            reply = body.get("message", {}).get("content", "")
+            finish_reasons.append(body.get("done_reason"))
             messages.append({"role": "assistant", "content": reply})
             replies.append(reply)
+        self.last_finish_reasons = finish_reasons
         return replies
 
 
@@ -140,38 +156,66 @@ class LlamaCppModel:
     additional_files: List[str] = field(default_factory=list)
     engine_kwargs: Dict = field(default_factory=dict)
     mode: str = "chat"
+    #: True if the chat template opens a ``<think>`` block (serving.reasoning);
+    #: TestRunner uses it to split the trace from the final answer.
+    reasoning: bool = False
+    #: Default generation budget (serving.max_tokens). Reasoning models need
+    #: far more than 512 to get past the trace to an answer.
+    max_tokens: int = _DEFAULT_MAX_TOKENS
 
-    def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str:
-        engine = llamacpp_engine.get_engine(
+    def describe(self) -> Dict:
+        """Settings and the exact weights file, for outputs provenance."""
+        engine = self._engine()
+        return {
+            "backend": "llamacpp",
+            "repo_id": self.repo_id,
+            "gguf_file": self.filename,
+            "mode": self.mode,
+            "reasoning": self.reasoning,
+            "max_tokens": self.max_tokens,
+            "default_temperature": _DEFAULT_TEMPERATURE,
+            "n_ctx": self.engine_kwargs.get("n_ctx"),
+            "weights": provenance.weights_info(engine.resolved_path),
+        }
+
+    def _engine(self):
+        return llamacpp_engine.get_engine(
             repo_id=self.repo_id,
             filename=self.filename,
             additional_files=self.additional_files,
             engine_kwargs=self.engine_kwargs,
         )
+    #: llama.cpp ``finish_reason`` per turn of the most recent call ("stop" /
+    #: "length"); read by TestRunner to flag truncated replies.
+    last_finish_reasons: List[Optional[str]] = field(default_factory=list, repr=False)
+
+    def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str:
+        engine = self._engine()
         call = engine.generate if self.mode == "completion" else engine.chat
-        return call(
+        text = call(
             prompt,
             system_prompt=system_prompt,
-            max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+            max_tokens=kwargs.get("max_tokens", self.max_tokens),
             temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
+            seed=kwargs.get("seed"),
         )
+        self.last_finish_reasons = list(engine.last_finish_reasons)
+        return text
 
     def generate_conversation(
         self, turns: List[str], system_prompt: Optional[str] = None, **kwargs
     ) -> List[str]:
-        engine = llamacpp_engine.get_engine(
-            repo_id=self.repo_id,
-            filename=self.filename,
-            additional_files=self.additional_files,
-            engine_kwargs=self.engine_kwargs,
-        )
+        engine = self._engine()
         call = engine.generate_turns if self.mode == "completion" else engine.chat_turns
-        return call(
+        replies = call(
             turns,
             system_prompt=system_prompt,
-            max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+            max_tokens=kwargs.get("max_tokens", self.max_tokens),
             temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
+            seed=kwargs.get("seed"),
         )
+        self.last_finish_reasons = list(engine.last_finish_reasons)
+        return replies
 
 
 @dataclass
@@ -228,6 +272,7 @@ class ModelLoader:
         self.prefer_engine = prefer_engine
         self.ensure_daemon = ensure_daemon
         profile = _as_dict(hardware_profile)
+        self._profile = profile
         self._llamacpp_kwargs = llamacpp_engine.engine_kwargs_from_profile(profile)
         # Apply the resident-model cap so llama.cpp loads sequentially.
         llamacpp_engine.set_max_resident(
@@ -258,6 +303,14 @@ class ModelLoader:
         if provider in {"replicate", "anthropic", "openai"}:
             return ReplicateModel(id=model_id, model=entry.get("model", model_id))
 
+        if "mode" in entry:
+            # A top-level `mode` is never read, so a raw base model would be
+            # silently served in chat mode (validation gap C5). Fail instead.
+            raise ValueError(
+                f"{model_id!r}: put `mode` under `serving:` (serving.mode); "
+                "a top-level `mode` key is ignored."
+            )
+
         # The model entry names its engine in ``serving.engine``; the loader's
         # ``prefer_engine`` is only the fallback when it doesn't.
         serving = entry.get("serving", {})
@@ -276,8 +329,12 @@ class ModelLoader:
                 repo_id=entry["checkpoint"],
                 filename=serving.get("gguf_file"),
                 additional_files=list(serving.get("additional_files") or []),
-                engine_kwargs=dict(self._llamacpp_kwargs),
+                engine_kwargs=llamacpp_engine.engine_kwargs_from_profile(
+                    self._profile, n_ctx=llamacpp_engine.n_ctx_for(entry, self._profile)
+                ),
                 mode=mode,
+                reasoning=bool(serving.get("reasoning", False)),
+                max_tokens=int(serving.get("max_tokens", _DEFAULT_MAX_TOKENS)),
             )
 
         if engine == "ollama":

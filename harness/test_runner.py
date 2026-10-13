@@ -9,20 +9,30 @@ Outputs are written to ``results/model_outputs.json`` as a single object with th
 rows (one per test/model) nested under ``outputs``. Each row carries the
 wall-clock generation time (``latency_s``); per-generation and per-model timing
 summaries are also logged as the run proceeds.
+
+While a run is in progress, each row is also appended to
+``<results_path>.partial.jsonl`` so a crash loses at most one row; see
+``TestRunner.run_tests`` for resume and overwrite rules.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import time
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from harness import provenance
+from harness.reasoning import SplitReply, split_reasoning
 from harness.test_suite import TestCase, load_test_suite
 
 logger = logging.getLogger(__name__)
+
+
+class CheckpointMismatchError(ValueError):
+    """A resume checkpoint was written for a different suite or ``n_samples``."""
 
 
 class TestRunner:
@@ -44,17 +54,35 @@ class TestRunner:
         self.model_loader = model_loader
         self.results_path = results_path
 
+    @property
+    def checkpoint_path(self) -> str:
+        """Append-only JSONL checkpoint written while a run is in progress."""
+        return self.results_path + ".partial.jsonl"
+
     def run_tests(
         self,
         models: Iterable[str],
         gen_kwargs: Optional[dict] = None,
         n_samples: int = 1,
+        resume: bool = False,
+        overwrite: bool = False,
+        seed: int = 0,
     ) -> None:
         """Generate outputs for every (model, test) pair and persist them.
 
-        Writes ``results_path`` once, overwriting any previous run: a single
-        JSON object ``{"outputs": [...], "provenance": {...}}`` with one row
-        per (test, model, sample).
+        The result is a single JSON object ``{"outputs": [...], "provenance":
+        {...}}`` at ``results_path``, one row per (test, model, sample).
+
+        Each row is also appended to ``checkpoint_path`` (and flushed to disk)
+        as soon as it is generated, so a crash part-way through a multi-hour
+        run loses at most the row in progress. ``resume=True`` reloads that
+        checkpoint, skips every (model, test_id, sample_index) that already
+        succeeded, and re-runs the ones that errored. The checkpoint is
+        deleted only after the final JSON is written.
+
+        To protect finished or interrupted work, a fresh run (``resume=False``)
+        refuses to start if a checkpoint exists, or if ``results_path`` exists
+        and ``overwrite`` is False.
 
         ``n_samples`` > 1 draws that many independent generations per (model,
         test) at the same sampling settings, each tagged with a
@@ -63,53 +91,155 @@ class TestRunner:
         uncertainty measure (docs/critical-assessment.md #7). Downstream,
         ``judges.meta_eval.sample_variance`` reports the per-test pass-rate
         and standard error once the judged verdicts carry >1 sample.
+
+        Sample ``i`` is generated with seed ``seed + i``: samples differ from
+        each other, and a rerun with the same seed reproduces them (as far as
+        the backend is deterministic). The seed is recorded on every row.
         """
         gen_kwargs = gen_kwargs or {}
         os.makedirs(os.path.dirname(self.results_path) or ".", exist_ok=True)
         models = list(models)
+        # Everything that changes what a row means. Resuming under a different
+        # header would mix two configurations in one run, so it is refused.
+        header = {
+            "suite_sha256": provenance.file_sha256(self.test_suite_path),
+            "n_samples": n_samples,
+            "seed": seed,
+            "gen_kwargs": gen_kwargs,
+            "models_config_sha256": _config_sha256(getattr(self.model_loader, "config", None)),
+        }
+
+        done: Dict[Tuple[str, str, int], dict] = {}
+        if resume and not os.path.exists(self.checkpoint_path):
+            # Nothing to resume. Without this check a --resume on a finished
+            # run would regenerate everything and replace its results.
+            if os.path.exists(self.results_path) and not overwrite:
+                raise FileExistsError(
+                    f"Nothing to resume: {self.checkpoint_path} does not exist, and "
+                    f"{self.results_path} is a finished run. Pass --overwrite to replace it."
+                )
+            logger.info("No checkpoint at %s; starting from scratch", self.checkpoint_path)
+        elif resume:
+            done = self._load_checkpoint(header)
+        elif os.path.exists(self.checkpoint_path):
+            raise FileExistsError(
+                f"{self.checkpoint_path} holds an interrupted run. Resume it "
+                "(--resume) or delete it before starting a new run."
+            )
+        elif os.path.exists(self.results_path) and not overwrite:
+            raise FileExistsError(
+                f"{self.results_path} already exists. Pass --overwrite to replace it."
+            )
+        if not os.path.exists(self.checkpoint_path):
+            with open(self.checkpoint_path, "w", encoding="utf-8") as sink:
+                sink.write(json.dumps({"header": header}) + "\n")
 
         rows: List[dict] = []
-        for model_id in models:
-            logger.info("Loading model under test: %s", model_id)
-            model = self.model_loader.load(model_id)
-            latencies: List[float] = []
-            for test in self.test_suite:
-                for sample_index in range(n_samples):
-                    row = self._run_one(model, model_id, test, gen_kwargs, sample_index)
-                    latencies.append(row["latency_s"])
+        # What each model actually ran with (weights file + hash, mode,
+        # context, budget), for provenance. A model skipped on resume is not
+        # loaded, so it has no entry.
+        model_details: Dict[str, dict] = {}
+        with open(self.checkpoint_path, "a", encoding="utf-8") as checkpoint:
+            for model_id in models:
+                keys = [
+                    (model_id, test, i) for test in self.test_suite for i in range(n_samples)
+                ]
+                if all((m, t.id, i) in done for m, t, i in keys):
+                    logger.info("Skipping %s: all rows already in the checkpoint", model_id)
+                    rows.extend(done[(m, t.id, i)] for m, t, i in keys)
+                    continue
+                logger.info("Loading model under test: %s", model_id)
+                model = self.model_loader.load(model_id)
+                latencies: List[float] = []
+                for _, test, sample_index in keys:
+                    row = done.get((model_id, test.id, sample_index))
+                    if row is None:
+                        row = self._run_one(
+                            model, model_id, test,
+                            {**gen_kwargs, "seed": seed + sample_index}, sample_index,
+                        )
+                        latencies.append(row["latency_s"])
+                        checkpoint.write(json.dumps(row) + "\n")
+                        checkpoint.flush()
+                        os.fsync(checkpoint.fileno())
                     rows.append(row)
-            _log_latency_summary(model_id, latencies)
+                _log_latency_summary(model_id, latencies)
+                describe = getattr(model, "describe", None)
+                model_details[model_id] = describe() if describe else None
 
         payload = {
             "outputs": rows,
             "provenance": provenance.collect(
-                suite_path=self.test_suite_path, models=models, n_samples=n_samples
+                suite_path=self.test_suite_path, models=models, n_samples=n_samples,
+                seed=seed, gen_kwargs=gen_kwargs, model_details=model_details,
             ),
         }
-        with open(self.results_path, "w", encoding="utf-8") as sink:
+        tmp_path = self.results_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as sink:
             json.dump(payload, sink, indent=2)
             sink.write("\n")
+        os.replace(tmp_path, self.results_path)
+        os.remove(self.checkpoint_path)
         logger.info("Wrote %d output row(s) to %s", len(rows), self.results_path)
+
+    def _load_checkpoint(self, header: dict) -> Dict[Tuple[str, str, int], dict]:
+        """Successful rows from an interrupted run, keyed by (model, test_id, sample_index).
+
+        Refuses a checkpoint written for a different suite or ``n_samples``:
+        mixing rows from two configurations would silently corrupt the run.
+        A truncated last line (a crash mid-write) is ignored.
+        """
+        with open(self.checkpoint_path, encoding="utf-8") as source:
+            lines = source.read().splitlines()
+        saved = json.loads(lines[0]).get("header") if lines else None
+        if saved != header:
+            raise CheckpointMismatchError(
+                f"{self.checkpoint_path} was written for {saved}, but this run is "
+                f"{header}. Delete it to start over."
+            )
+        done: Dict[Tuple[str, str, int], dict] = {}
+        for line in lines[1:]:
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                logger.warning("Ignoring a truncated checkpoint line")
+                continue
+            if row.get("error") is None:
+                done[(row["model"], row["test_id"], row["sample_index"])] = row
+        logger.info("Resuming: %d successful row(s) in the checkpoint", len(done))
+        return done
 
     def _run_one(
         self, model, model_id: str, test: TestCase, gen_kwargs: dict, sample_index: int = 0
     ) -> dict:
         start = time.monotonic()
         transcript = None
+        finish_reasons = None
+        raw_replies: Optional[List[str]] = None
+        splits: List[SplitReply] = []
         try:
             if test.is_multi_turn:
                 # Real conversation: turn n sees the model's own reply to turn
                 # n-1, not just its raw text (see model_loader.generate_conversation).
-                replies = model.generate_conversation(
+                raw_replies = list(model.generate_conversation(
                     test.turns, system_prompt=test.system_prompt, **gen_kwargs
-                )
-                transcript = _format_transcript(test.turns, replies)
-                output = replies[-1] if replies else ""
+                ))
             else:
-                output = model.generate(
+                raw_replies = [model.generate(
                     test.prompt, system_prompt=test.system_prompt, **gen_kwargs
-                )
+                )]
+            # Judges score the final answer; the thinking trace is kept apart
+            # (decision D2, harness/reasoning.py).
+            opens_think = bool(getattr(model, "reasoning", False))
+            splits = [split_reasoning(r, opens_think) for r in raw_replies]
+            answers = [sp.answer for sp in splits]
+            output = answers[-1] if answers else ""
+            if test.is_multi_turn:
+                transcript = _format_transcript(test.turns, answers)
             error = None
+            # Backends that report it (llama.cpp, Ollama) give one finish
+            # reason per turn; "length" means the reply was cut short.
+            finish_reasons = list(getattr(model, "last_finish_reasons", None) or []) or None
         except Exception as exc:  # noqa: BLE001 -- one bad test shouldn't abort the run
             logger.warning("Generation failed (%s / %s): %s", model_id, test.id, exc)
             output, error = "", str(exc)
@@ -125,12 +255,17 @@ class TestRunner:
             "test_id": test.id,
             "model": model_id,
             "sample_index": sample_index,
+            "seed": gen_kwargs.get("seed"),
             "category": test.category,
             "domain": test.domain,
             "technique": test.technique,
             "severity": test.severity,
             "source": test.source,
             "criteria": test.criteria,
+            # What the model was asked: every user turn (a single-turn case is
+            # one turn) plus the system prompt. Judges need these to grade the
+            # response in context (validation gap C1).
+            "turns": list(test.turns),
             "system_prompt": test.system_prompt,
             "metadata": test.metadata,
             "output": output,
@@ -138,9 +273,39 @@ class TestRunner:
             # single-turn) -- judges score this, not just the final reply, so
             # consistency-across-turns criteria are actually checkable.
             "transcript": transcript,
+            # Per turn, like ``turns``. ``reasoning`` is None for a reply with
+            # no thinking trace; ``raw_replies`` is exactly what the model sent.
+            "raw_replies": raw_replies,
+            "reasoning": (
+                [sp.reasoning for sp in splits]
+                if any(sp.reasoning is not None for sp in splits) else None
+            ),
+            # False if any turn's trace was cut off before its answer began:
+            # that turn has no final answer to grade.
+            "reasoning_complete": _all_complete(splits),
+            "finish_reasons": finish_reasons,
+            # True if any turn hit max_tokens or the context window. None when
+            # the backend does not report finish reasons.
+            "truncated": (
+                any(r == "length" for r in finish_reasons) if finish_reasons else None
+            ),
             "error": error,
             "latency_s": round(latency_s, 3),
         }
+
+
+def _config_sha256(config) -> Optional[str]:
+    """Stable hash of the loader's parsed models config (None if unavailable)."""
+    if not isinstance(config, dict):
+        return None
+    return hashlib.sha256(json.dumps(config, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _all_complete(splits: List[SplitReply]) -> Optional[bool]:
+    """False if any trace was cut off, True if all traces finished, None if
+    no reply had a trace."""
+    flags = [sp.reasoning_complete for sp in splits if sp.reasoning_complete is not None]
+    return all(flags) if flags else None
 
 
 def _format_transcript(turns: List[str], replies: List[str]) -> str:
