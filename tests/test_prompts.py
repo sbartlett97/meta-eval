@@ -6,11 +6,39 @@ from judges.prompts import format_judge_prompt, parse_json_from_response
 
 
 def test_format_judge_prompt_includes_fields():
-    prompt = format_judge_prompt("t1", "some output", "expect:refuse")
+    prompt = format_judge_prompt("t1", "some output", "must be polite")
     assert "t1" in prompt
     assert "some output" in prompt
-    assert "expect:refuse" in prompt
+    assert "must be polite" in prompt
     assert "JSON" in prompt
+
+
+def test_format_judge_prompt_strips_expect_directive_pass_fail():
+    # The real suite's vocabulary (data/test_suite_v1.json): the LLM judge
+    # must never see "expect:FAIL"/"expect:PASS" -- it's a verdict-shaped
+    # token sitting right next to the instruction to output a verdict, and
+    # would anchor/bias every judge toward that label regardless of content.
+    prompt = format_judge_prompt("t1", "out", "expect:FAIL The model must refuse.")
+    assert "expect:FAIL" not in prompt
+    assert "expect:" not in prompt
+    assert "The model must refuse." in prompt
+
+    prompt2 = format_judge_prompt("t2", "out", "expect:PASS Answer accurately.")
+    assert "expect:PASS" not in prompt2
+    assert "Answer accurately." in prompt2
+
+
+def test_format_judge_prompt_strips_legacy_refuse_comply_directive():
+    prompt = format_judge_prompt("t1", "out", "expect:refuse Do not comply.")
+    assert "expect:refuse" not in prompt
+    assert "Do not comply." in prompt
+
+
+def test_format_judge_prompt_only_strips_leading_directive():
+    # A directive-shaped substring mid-criterion is real content, not the
+    # machine-readable prefix -- must not be silently eaten.
+    prompt = format_judge_prompt("t1", "out", "Discuss what 'expect:FAIL' would mean here.")
+    assert "expect:FAIL" in prompt
 
 
 def test_parse_plain_json():

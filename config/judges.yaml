@@ -13,12 +13,26 @@
 #               via `gguf_file`, loads sequentially; no server, no port)
 #   none     -> deterministic, no network call
 #
-# `priority` is used by the panel to select a subset when running cheap/fast
-# pilots (lower number = run first / always). See PRD "Decision 3: Judge
-# Placement".
+# `priority` selects a subset when running cheap/fast pilots (PRD "Decision 3:
+# Judge Placement"). 1 = zero/near-zero marginal cost to run (remote API calls +
+# the free deterministic heuristic) -- this is what `--judges cheap` selects.
+# 2 = local GGUF judges, which are "free" in dollars but expensive in wall-clock
+# (multi-GB sequential load). 3+ reserved for anything even more expensive.
+#
+# IMPORTANT -- judge/model independence (see docs/critical-assessment.md #2.1):
+# no `id`/`checkpoint` here may match an entry in config/models.yaml. A judge
+# must never be the same weights as a model it is scoring -- that is
+# self-grading, not evaluation, and silently invalidates any "are judges
+# biased" analysis. The local judges below (Mistral / Llama-2) are
+# deliberately DIFFERENT checkpoints from every model under test.
 
 judges:
-  # ---- Remote judges (hosted API) --------------------------------------
+  # ---- Remote judges (hosted API) -- the trusted, model-independent anchor --
+  # Enabled by default: without at least one judge that cannot possibly share
+  # weights with a model under test, judge-bias meta-evaluation is meaningless.
+  # Requires ANTHROPIC_API_KEY / OPENAI_API_KEY; a judge that can't authenticate
+  # fails closed to an AMBIGUOUS verdict (Judge.evaluate), it does not abort the
+  # run -- see #2.9 in the assessment for why that's still worth fixing.
   - id: "claude-sonnet-4-6"
     provider: "anthropic"
     model: "claude-sonnet-4-6"
@@ -36,40 +50,43 @@ judges:
     enabled: true
 
   # ---- Local judges (served IN-PROCESS via llama.cpp / GGUF) ------------
-  # `gguf_file` -> Llama.from_pretrained(filename=...): prefer the exact file
-  # name (e.g. "Mistral-7B-v0.3.Q4_K_M.gguf"); a glob is also accepted. It also
-  # scopes hydration to that file. `additional_files` fetches extra shards.
-  #
-  # Local judges accept the SAME entry shape as models under test, so an entry
-  # can be copied verbatim from models.yaml:
-  #   - id: "gemma-4-12b"
-  #     checkpoint: "unsloth/gemma-4-12b-it-GGUF"
-  #     serving:
-  #       engine: "llamacpp"
-  #       gguf_file: "*Q4_K_M.gguf"
-  # The flat judge shape below (access: llamacpp + model + gguf_file) works too.
+  # `gguf_file` pins one quant in the repo and also scopes hydration to it.
+  # Deliberately NOT any checkpoint listed in config/models.yaml (see the
+  # judge/model-independence note above). Both repos below were verified live
+  # against the HuggingFace API before being pinned here: real, public
+  # (`gated: false`), instruct-tuned (so the chat-template path
+  # LocalLlamaCppJudge always uses actually gets a template to apply), and
+  # the exact `Q4_K_M.gguf` filename confirmed present in each repo's file
+  # listing -- `Llama.from_pretrained` fails loudly at hydration time if a
+  # filename doesn't match, so an unverified name here would abort the whole
+  # `--judges all` run before any output is generated.
   - id: "mistral-7b-local"
     provider: "local"
-    model: "unsloth/Mistral-7B-v0.3-GGUF"
+    model: "bartowski/Mistral-7B-Instruct-v0.3-GGUF"
     access: "llamacpp"
-    gguf_file: "*Q4_K_M.gguf"
+    gguf_file: "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf"
     cost_per_1k_tokens: 0.0
     priority: 2
     enabled: true
 
-  - id: "llama-7b-local"
+  - id: "llama-3.2-3b-local"
     provider: "local"
-    model: "unsloth/Llama-2-7b-GGUF"
+    model: "bartowski/Llama-3.2-3B-Instruct-GGUF"
     access: "llamacpp"
-    gguf_file: "*Q4_K_M.gguf"
+    gguf_file: "Llama-3.2-3B-Instruct-Q4_K_M.gguf"
     cost_per_1k_tokens: 0.0
     priority: 2
     enabled: true
 
   # ---- Deterministic baseline ------------------------------------------
+  # Zero cost, zero network, no weights -- the one judge guaranteed independent
+  # of every model under test. See judges/heuristic_judge.py: it now deterministically
+  # checks refusal-consistency/jailbreak-susceptibility (keyword + expect:PASS|FAIL
+  # directive) and format-adherence (real JSON/CSV/sentence-count/markdown/python
+  # checks) rather than degrading to AMBIGUOUS on most of the suite.
   - id: "heuristic-baseline"
     provider: "deterministic"
     access: "none"
     cost_per_1k_tokens: 0.0
-    priority: 3
+    priority: 1
     enabled: true

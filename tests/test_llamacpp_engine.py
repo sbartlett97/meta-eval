@@ -162,21 +162,63 @@ def test_chat_without_json_only_has_no_response_format(fake_llama_cpp):
     assert call["response_format"] is None
 
 
-def test_chat_renders_system_prompt_as_system_message(fake_llama_cpp):
+# ---------------------------------------------------------------------- #
+# system_prompt + multi-turn (docs/critical-assessment.md #2.2, #2.4)
+# ---------------------------------------------------------------------- #
+def test_chat_sends_system_prompt_as_system_role(fake_llama_cpp):
     engine = llamacpp_engine.get_engine(repo_id="org/repo", filename="m.gguf")
-    engine.chat("hello", system_prompt="You are terse.")
+    engine.chat("hello", system_prompt="You are a pirate.")
     (call,) = _FakeLlama.instances[0].chat_calls
     assert call["messages"] == [
-        {"role": "system", "content": "You are terse."},
+        {"role": "system", "content": "You are a pirate."},
         {"role": "user", "content": "hello"},
     ]
 
 
-def test_chat_without_system_prompt_has_single_user_turn(fake_llama_cpp):
+def test_chat_without_system_prompt_has_no_system_message(fake_llama_cpp):
     engine = llamacpp_engine.get_engine(repo_id="org/repo", filename="m.gguf")
-    engine.chat("hello", system_prompt=None)
+    engine.chat("hello")
     (call,) = _FakeLlama.instances[0].chat_calls
     assert call["messages"] == [{"role": "user", "content": "hello"}]
+
+
+def test_generate_completion_prepends_system_prompt_as_text(fake_llama_cpp):
+    engine = llamacpp_engine.get_engine(repo_id="org/repo", filename="m.gguf")
+    engine.generate("hello", system_prompt="You are a pirate.")
+    call = _FakeLlama.instances[0].calls[0]
+    assert call["prompt"] == "You are a pirate.\n\nhello"
+
+
+def test_chat_turns_feeds_prior_reply_back_as_assistant_turn(fake_llama_cpp):
+    # The whole point of real multi-turn: turn 2 must see turn 1's *reply*, not
+    # just turn 1's raw text, in the message history sent to the model.
+    engine = llamacpp_engine.get_engine(repo_id="org/repo", filename="m.gguf")
+    replies = engine.chat_turns(["first", "second"], system_prompt="sys")
+
+    assert replies == ["CHAT::first", "CHAT::second"]
+    llm = _FakeLlama.instances[0]
+    assert len(llm.chat_calls) == 2
+    assert llm.chat_calls[0]["messages"] == [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "first"},
+    ]
+    assert llm.chat_calls[1]["messages"] == [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "CHAT::first"},
+        {"role": "user", "content": "second"},
+    ]
+
+
+def test_generate_turns_accumulates_transcript(fake_llama_cpp):
+    engine = llamacpp_engine.get_engine(repo_id="org/repo", filename="m.gguf")
+    replies = engine.generate_turns(["A", "B"])
+
+    assert len(replies) == 2
+    calls = _FakeLlama.instances[0].calls
+    assert calls[0]["prompt"] == "A"
+    # Second call's prompt includes turn 1's text AND turn 1's own reply.
+    assert calls[1]["prompt"] == "A" + replies[0] + "B"
 
 
 def test_get_engine_caches_by_ref(fake_llama_cpp):
@@ -308,11 +350,11 @@ def test_model_chat_mode_never_json_constrains(fake_llama_cpp):
     assert call["response_format"] is None
 
 
-def test_model_chat_mode_forwards_system_prompt(fake_llama_cpp):
+def test_llamacpp_model_generate_passes_system_prompt_through(fake_llama_cpp):
     model = LlamaCppModel(id="m", repo_id="it/repo", filename="m.gguf")
-    model.generate("hello", system_prompt="Be safe.")
+    model.generate("hello", system_prompt="be nice")
     (call,) = _FakeLlama.instances[0].chat_calls
-    assert call["messages"][0] == {"role": "system", "content": "Be safe."}
+    assert call["messages"][0] == {"role": "system", "content": "be nice"}
 
 
 def test_model_completion_mode_prepends_system_prompt(fake_llama_cpp):
@@ -324,6 +366,18 @@ def test_model_completion_mode_prepends_system_prompt(fake_llama_cpp):
     out = model.generate("hello", system_prompt="Be safe.")
     assert out == "OUT::Be safe.\n\nhello"
     assert _FakeLlama.instances[0].chat_calls == []
+
+
+def test_llamacpp_model_generate_conversation_uses_chat_turns(fake_llama_cpp):
+    model = LlamaCppModel(id="m", repo_id="it/repo", filename="m.gguf")
+    replies = model.generate_conversation(["q1", "q2"], system_prompt="ctx")
+
+    assert replies == ["CHAT::q1", "CHAT::q2"]
+    llm = _FakeLlama.instances[0]
+    assert len(llm.chat_calls) == 2
+    # turn 2 sees turn 1's reply, proving it's a real conversation not two
+    # independent single-turn calls.
+    assert {"role": "assistant", "content": "CHAT::q1"} in llm.chat_calls[1]["messages"]
 
 
 def test_judge_uses_chat_template_with_json_grammar(fake_llama_cpp):

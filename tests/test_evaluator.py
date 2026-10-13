@@ -22,6 +22,7 @@ def _write_outputs_json(path):
 def test_run_evaluation_reads_and_writes_json(tmp_path):
     outputs = tmp_path / "model_outputs.json"
     verdicts = tmp_path / "model_verdicts.json"
+    meta_eval = tmp_path / "judge_meta_eval.json"
     _write_outputs_json(outputs)
 
     run_evaluation(
@@ -29,16 +30,38 @@ def test_run_evaluation_reads_and_writes_json(tmp_path):
         judges_config=_HEURISTIC_ONLY,
         verdicts_path=str(verdicts),
         hardware_profile={},
+        meta_eval_path=str(meta_eval),  # must not default into the real results/ dir
     )
 
     data = json.loads(verdicts.read_text())
-    assert set(data) == {"verdicts"}  # single object, rows under `verdicts`
+    assert set(data) == {"verdicts", "provenance"}
+    assert data["provenance"]["judge_panel"] == ["heuristic-baseline"]
     rows = data["verdicts"]
     assert [r["test_id"] for r in rows] == ["t1", "t2"]
     for r in rows:
         assert r["model"] == "m"
+        assert r["sample_index"] == 0  # rows without sample_index default to 0
         assert r["verdicts"] and r["verdicts"][0]["judge_id"] == "heuristic-baseline"
         assert "consensus" in r
+
+    report = json.loads(meta_eval.read_text())
+    assert report["n_items"] == 2
+    assert report["judges"] == ["heuristic-baseline"]
+
+
+def test_run_evaluation_meta_eval_path_none_skips_the_file(tmp_path):
+    outputs = tmp_path / "model_outputs.json"
+    verdicts = tmp_path / "model_verdicts.json"
+    _write_outputs_json(outputs)
+
+    run_evaluation(
+        outputs_path=str(outputs),
+        judges_config=_HEURISTIC_ONLY,
+        verdicts_path=str(verdicts),
+        hardware_profile={},
+        meta_eval_path=None,
+    )
+    assert not (tmp_path / "judge_meta_eval.json").exists()
 
 
 def test_load_output_rows_accepts_object_bare_array_and_jsonl(tmp_path):

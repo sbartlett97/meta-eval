@@ -9,7 +9,7 @@ import os
 import time
 from typing import Optional
 
-from judges.base import Judge, Verdict
+from judges.base import Judge, NonRetryableJudgeError, Verdict
 from judges.prompts import format_judge_prompt, parse_json_from_response
 
 
@@ -23,12 +23,16 @@ class GPT4Judge(Judge):
         api_key: Optional[str] = None,
         max_tokens: int = 256,
         temperature: float = 0.0,
+        max_retries: int = 2,
+        retry_backoff_s: float = 1.0,
     ) -> None:
         super().__init__()
         self.model = model
         self.id = judge_id
         self.max_tokens = max_tokens
         self.temperature = temperature
+        self.max_retries = max_retries
+        self.retry_backoff_s = retry_backoff_s
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self._client = None
 
@@ -38,13 +42,20 @@ class GPT4Judge(Judge):
         try:
             import openai
         except ImportError as exc:  # pragma: no cover - env dependent
-            raise RuntimeError("openai SDK not installed (`pip install openai`).") from exc
+            raise NonRetryableJudgeError("openai SDK not installed (`pip install openai`).") from exc
         if not self._api_key:
-            raise RuntimeError("OPENAI_API_KEY is not set.")
+            raise NonRetryableJudgeError("OPENAI_API_KEY is not set.")
         self._client = openai.OpenAI(api_key=self._api_key)
         return self._client
 
-    def _evaluate(self, test_id: str, model_output: str, criteria: str) -> Verdict:
+    def _evaluate(
+        self,
+        test_id: str,
+        model_output: str,
+        criteria: str,
+        category: str = "uncategorized",
+        metadata: Optional[dict] = None,
+    ) -> Verdict:
         client = self._ensure_client()
         prompt = format_judge_prompt(test_id, model_output, criteria)
 

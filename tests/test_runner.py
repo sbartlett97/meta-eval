@@ -45,7 +45,8 @@ def _write_suite(tmp_path):
 
 def _read_outputs(path):
     data = json.loads(path.read_text())
-    assert set(data) == {"outputs"}  # single object, rows under `outputs`
+    assert set(data) == {"outputs", "provenance"}
+    assert data["provenance"]["suite_path"]  # provenance is always populated
     return data["outputs"]
 
 
@@ -60,6 +61,21 @@ def test_runner_records_generation_latency(tmp_path):
         assert isinstance(r["latency_s"], (int, float))
         assert r["latency_s"] >= 0
         assert r["error"] is None
+        assert r["sample_index"] == 0  # default n_samples=1 -> always sample 0
+
+
+def test_runner_n_samples_repeats_each_test(tmp_path):
+    out = tmp_path / "outputs.json"
+    runner = Runner(_write_suite(tmp_path), _FakeLoader(_FakeModel()), results_path=str(out))
+    runner.run_tests(["m"], n_samples=3)
+
+    rows = _read_outputs(out)
+    assert [r["test_id"] for r in rows] == ["t1", "t1", "t1", "t2", "t2", "t2"]
+    assert [r["sample_index"] for r in rows if r["test_id"] == "t1"] == [0, 1, 2]
+
+    data = json.loads(out.read_text())
+    assert data["provenance"]["n_samples"] == 3
+    assert data["provenance"]["models"] == ["m"]
 
 
 def test_runner_passes_and_records_system_prompt(tmp_path):
@@ -68,10 +84,10 @@ def test_runner_passes_and_records_system_prompt(tmp_path):
     runner = Runner(_write_suite(tmp_path), _FakeLoader(model), results_path=str(out))
     runner.run_tests(["m"])
 
-    # t1's system prompt reaches the model as a generate kwarg; t2 has none,
-    # so the kwarg is not sent at all.
+    # t1's system prompt reaches the model as a generate kwarg; t2 has none, so
+    # it is passed as None (every backend's generate() declares the parameter).
     assert model.calls[0]["system_prompt"] == "Be terse."
-    assert "system_prompt" not in model.calls[1]
+    assert model.calls[1]["system_prompt"] is None
 
     # And it is persisted on the output rows (null for t2).
     rows = _read_outputs(out)

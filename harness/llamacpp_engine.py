@@ -322,53 +322,117 @@ class LlamaCppEngine:
             except Exception as exc:  # noqa: BLE001 - best-effort teardown
                 logger.warning("Error closing llama.cpp engine %s: %s", self.key, exc)
 
-    def generate(self, prompt: str, **kwargs) -> str:
+    def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str:
         """Run a single raw-completion prompt and return its text.
 
         Note: this is a **raw** completion — no chat template is applied, so an
         instruction-tuned GGUF will tend to *continue* the prompt rather than
         answer it. Use :meth:`chat` when the model should respond as an
         assistant (all instruction-tuned ``-it`` / ``-instruct`` checkpoints).
+
+        ``system_prompt``, if given, is prepended as plain text ahead of
+        ``prompt`` — base/completion checkpoints have no chat template to carry
+        a system role, so this is the best available approximation.
         """
         self._ensure_loaded()
         with _CACHE_LOCK:
             _ENGINE_CACHE.move_to_end(self.key)  # touch: most-recently used
+        full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
         result = self._llm.create_completion(
-            prompt,
+            full_prompt,
             max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
             temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
         )
         return result["choices"][0]["text"]
 
+    def generate_turns(
+        self, turns: Sequence[str], system_prompt: Optional[str] = None, **kwargs
+    ) -> List[str]:
+        """Multi-turn raw completion: each reply is appended to the running text
+        before the next turn is generated, so turn *n* actually sees the model's
+        own reply to turn *n-1* (not just its own raw prompt text).
+        """
+        self._ensure_loaded()
+        with _CACHE_LOCK:
+            _ENGINE_CACHE.move_to_end(self.key)
+        transcript = f"{system_prompt}\n\n" if system_prompt else ""
+        replies: List[str] = []
+        for turn in turns:
+            transcript += turn
+            result = self._llm.create_completion(
+                transcript,
+                max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+                temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
+            )
+            reply = result["choices"][0]["text"]
+            transcript += reply
+            replies.append(reply)
+        return replies
+
     def chat(
         self,
         prompt: str,
-        json_only: bool = False,
         system_prompt: Optional[str] = None,
+        json_only: bool = False,
         **kwargs,
     ) -> str:
         """Send ``prompt`` as a single user turn through the model's chat template.
 
         ``create_chat_completion`` applies the chat template embedded in the GGUF
         (Gemma/Mistral/Llama turn markers etc.), so instruction-tuned models
-        actually answer instead of continuing the text. ``system_prompt`` (when
-        set) is rendered as the template's system message ahead of the user turn.
-        With ``json_only=True`` decoding is grammar-constrained to a valid JSON
-        object via llama.cpp's ``response_format`` — the model *cannot* emit
-        non-JSON prose.
+        actually answer instead of continuing the text. With ``json_only=True``
+        decoding is grammar-constrained to a valid JSON object via llama.cpp's
+        ``response_format`` — the model *cannot* emit non-JSON prose. ``system_prompt``,
+        if given, is sent as a real ``system`` role message ahead of ``prompt``.
         """
         self._ensure_loaded()
         with _CACHE_LOCK:
             _ENGINE_CACHE.move_to_end(self.key)  # touch: most-recently used
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
         call_kwargs = {
             "max_tokens": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
             "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
         }
         if json_only:
             call_kwargs["response_format"] = {"type": "json_object"}
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
         result = self._llm.create_chat_completion(messages=messages, **call_kwargs)
         return result["choices"][0]["message"]["content"]
+
+    def chat_turns(
+        self,
+        turns: Sequence[str],
+        system_prompt: Optional[str] = None,
+        json_only: bool = False,
+        **kwargs,
+    ) -> List[str]:
+        """Real multi-turn chat: each reply is appended to ``messages`` as an
+        ``assistant`` turn before the next user turn is sent, so the model
+        actually sees (and can be held to) its own prior answer.
+        """
+        self._ensure_loaded()
+        with _CACHE_LOCK:
+            _ENGINE_CACHE.move_to_end(self.key)
+        call_kwargs = {
+            "max_tokens": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+            "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
+        }
+        if json_only:
+            call_kwargs["response_format"] = {"type": "json_object"}
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        replies: List[str] = []
+        for turn in turns:
+            messages.append({"role": "user", "content": turn})
+            # Pass a snapshot: callers/backends may retain the ``messages`` kwarg
+            # by reference, and this list is mutated on every subsequent turn.
+            result = self._llm.create_chat_completion(
+                messages=list(messages), **call_kwargs
+            )
+            reply = result["choices"][0]["message"]["content"]
+            messages.append({"role": "assistant", "content": reply})
+            replies.append(reply)
+        return replies

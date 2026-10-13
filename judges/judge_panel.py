@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Sequence
+from typing import Any, Dict, List, Sequence
 
 from judges.base import Judge, Verdict
 
@@ -25,6 +25,15 @@ class EvalItem:
     test_id: str
     model_output: str
     criteria: str = ""
+    #: Suite category (e.g. "format-adherence"). Lets a judge dispatch on the
+    #: kind of check being asked for -- see judges/heuristic_judge.py, which
+    #: uses it to run real deterministic checks instead of guessing from prose.
+    category: str = "uncategorized"
+    #: The test case's free-form ``metadata`` (e.g. ``{"check": "json",
+    #: "required_keys": [...]}``). Carries the params a deterministic check
+    #: needs -- see judges/format_checks.py -- without a judge having to parse
+    #: them back out of the English ``criteria`` prose.
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -46,10 +55,18 @@ class JudgePanel:
             raise ValueError("JudgePanel requires at least one judge")
         self.judges = list(judges)
 
-    def evaluate(self, test_id: str, model_output: str, criteria: str) -> PanelResult:
+    def evaluate(
+        self,
+        test_id: str,
+        model_output: str,
+        criteria: str,
+        category: str = "uncategorized",
+        metadata: Dict[str, Any] | None = None,
+    ) -> PanelResult:
         """Run every judge on one output. Judge errors are captured, not raised."""
         verdicts = [
-            judge.evaluate(test_id, model_output, criteria) for judge in self.judges
+            judge.evaluate(test_id, model_output, criteria, category, metadata or {})
+            for judge in self.judges
         ]
         return PanelResult(test_id=test_id, verdicts=verdicts)
 
@@ -68,7 +85,13 @@ class JudgePanel:
         for judge in self.judges:
             for item, result in zip(items, results):
                 result.verdicts.append(
-                    judge.evaluate(item.test_id, item.model_output, item.criteria)
+                    judge.evaluate(
+                        item.test_id,
+                        item.model_output,
+                        item.criteria,
+                        item.category,
+                        item.metadata,
+                    )
                 )
         return results
 
@@ -89,28 +112,54 @@ class JudgePanel:
 
 
 def aggregate_verdicts(result: PanelResult) -> dict:
-    """Placeholder aggregation -- SAM OWNS THE REAL META-EVALUATION.
+    """Per-item majority vote -- a naive placeholder for the real cross-item
+    meta-evaluation (inter-judge agreement, bias detection, reliability
+    weighting), which lives in judges/meta_eval.py and works over a whole
+    batch of these, not one item at a time. Do not treat this as the final
+    methodology on its own.
 
-    The PRD marks "Verdict Aggregation" and "Meta-evaluation logic" as Sam's
-    manual work (inter-judge agreement, bias detection, weighting by judge
-    reliability, etc.). This is a naive majority vote so the pipeline is runnable
-    end-to-end; do not treat it as the final methodology.
+    Two kinds of verdict are excluded from the vote entirely, not just treated
+    as an "AMBIGUOUS" ballot:
+
+    * a verdict whose judge call itself failed (``error`` set -- see
+      ``Judge.evaluate``) -- counting a transient API failure as a genuine
+      "AMBIGUOUS" would silently bias the consensus toward whichever judge
+      happened to have a flaky call on this item (docs/critical-assessment.md
+      #2.9), and
+    * a verdict where the judge structurally couldn't assess the criterion
+      (``abstained`` set -- e.g. ``HeuristicJudge`` on factual/reasoning
+      correctness it has no keyword signal for). An abstention isn't that
+      judge's opinion; counting it as one dilutes what the other judges
+      actually decided.
     """
+    ok_verdicts = [v for v in result.verdicts if v.error is None and not v.abstained]
+    n_errored = sum(1 for v in result.verdicts if v.error is not None)
+    n_abstained = sum(1 for v in result.verdicts if v.error is None and v.abstained)
+
     counts: Dict[str, int] = {}
     conf: Dict[str, float] = {}
-    for v in result.verdicts:
+    for v in ok_verdicts:
         counts[v.verdict] = counts.get(v.verdict, 0) + 1
         conf[v.verdict] = conf.get(v.verdict, 0.0) + v.confidence
     if not counts:
-        return {"test_id": result.test_id, "consensus": "AMBIGUOUS", "agreement": 0.0}
+        return {
+            "test_id": result.test_id,
+            "consensus": "AMBIGUOUS",
+            "agreement": 0.0,
+            "n_judges": 0,
+            "n_errored": n_errored,
+            "n_abstained": n_abstained,
+        }
 
     # Break ties by summed confidence.
     consensus = max(counts, key=lambda label: (counts[label], conf[label]))
-    agreement = counts[consensus] / len(result.verdicts)
+    agreement = counts[consensus] / len(ok_verdicts)
     return {
         "test_id": result.test_id,
         "consensus": consensus,
         "agreement": round(agreement, 3),
         "vote_counts": counts,
-        "n_judges": len(result.verdicts),
+        "n_judges": len(ok_verdicts),
+        "n_errored": n_errored,
+        "n_abstained": n_abstained,
     }

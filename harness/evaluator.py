@@ -15,9 +15,11 @@ Usage (from the PRD setup section):
     python harness/evaluator.py --outputs results/model_outputs.json --judges cheap
     python harness/evaluator.py --models mistral-7b-4bit --no-judge   # generate only
 
-Note: consensus here is a placeholder majority vote. The real meta-evaluation
-(inter-judge agreement, bias detection) is Sam's manual work -- see
-``judges.judge_panel.aggregate_verdicts``.
+Note: the per-item consensus is a naive placeholder majority vote (see
+``judges.judge_panel.aggregate_verdicts``). The real cross-item meta-evaluation
+-- inter-judge agreement/kappa, per-category/technique/severity bias -- is
+computed separately and written to ``results/judge_meta_eval.json``; see
+``judges.meta_eval``.
 """
 
 from __future__ import annotations
@@ -38,18 +40,20 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+from harness import provenance
 from harness.hydrate import hydrate_weights
 from harness.model_loader import ModelLoader
 from harness.test_runner import TestRunner
 from judges.factory import build_judges
 from judges.judge_panel import EvalItem, JudgePanel, aggregate_verdicts
+from judges.meta_eval import meta_evaluation_report
 
 logger = logging.getLogger(__name__)
 
 # Judge-subset presets (PRD "Decision 3: Judge Placement").
 _JUDGE_PRESETS = {
     "all": None,      # every enabled judge
-    "cheap": 1,       # priority <= 1 (remote API judges only)
+    "cheap": 1,       # priority <= 1 (remote API judges + free heuristic; no local GGUF loads)
     "pilot": 3,       # everything, but named for clarity in pilots
 }
 
@@ -60,6 +64,8 @@ def run_evaluation(
     verdicts_path: str = "results/model_verdicts.json",
     max_priority: Optional[int] = None,
     hardware_profile: str = "config/hardware_profile.yaml",
+    meta_eval_path: Optional[str] = "results/judge_meta_eval.json",
+    reference_judge_id: str = "heuristic-baseline",
 ) -> str:
     """Judge previously-generated model outputs; write verdicts. Returns the path."""
     judges = build_judges(
@@ -77,8 +83,13 @@ def run_evaluation(
     items = [
         EvalItem(
             test_id=row["test_id"],
-            model_output=row.get("output", ""),
+            # Multi-turn cases are judged on the full exchange (see
+            # TestRunner._run_one / _format_transcript), not just the final
+            # reply -- otherwise a consistency check has nothing to check.
+            model_output=row.get("transcript") or row.get("output", ""),
             criteria=row.get("criteria", ""),
+            category=row.get("category", "uncategorized"),
+            metadata=row.get("metadata") or {},
         )
         for row in rows
     ]
@@ -88,17 +99,47 @@ def run_evaluation(
         {
             "test_id": row["test_id"],
             "model": row.get("model"),
+            # 0 when the outputs file predates --n-samples / doesn't set it.
+            "sample_index": row.get("sample_index", 0),
+            # Carried through from the suite (see harness/test_suite.py) so
+            # per-category/technique/severity breakdowns are possible without
+            # re-joining against the original suite file.
+            "category": row.get("category", "uncategorized"),
+            "domain": row.get("domain", ""),
+            "technique": row.get("technique", ""),
+            "severity": row.get("severity", ""),
+            "source": row.get("source", ""),
             "verdicts": [v.to_dict() for v in result.verdicts],
             "consensus": aggregate_verdicts(result),
         }
         for row, result in zip(rows, results)
     ]
+    payload = {
+        "verdicts": records,
+        "provenance": provenance.collect(
+            outputs_path=outputs_path,
+            judges_config=judges_config if isinstance(judges_config, str) else None,
+            judge_panel=[j.id for j in judges],
+        ),
+    }
     with open(verdicts_path, "w", encoding="utf-8") as sink:
-        json.dump({"verdicts": records}, sink, indent=2)
+        json.dump(payload, sink, indent=2)
         sink.write("\n")
 
     logger.info("Wrote %d verdict row(s) to %s", len(records), verdicts_path)
     logger.info("Cost/latency summary: %s", panel.cost_summary())
+
+    # The actual meta-evaluation (docs/critical-assessment.md #1/#8):
+    # inter-judge agreement (Cohen's kappa, not just raw agreement -- judges
+    # skewed toward one label agree by chance alone) and per-category/
+    # technique/severity bias, not just a naive per-item majority vote.
+    if meta_eval_path:
+        report = meta_evaluation_report(records, reference_judge_id=reference_judge_id)
+        os.makedirs(os.path.dirname(meta_eval_path) or ".", exist_ok=True)
+        with open(meta_eval_path, "w", encoding="utf-8") as sink:
+            json.dump(report, sink, indent=2)
+            sink.write("\n")
+        logger.info("Wrote judge meta-evaluation to %s", meta_eval_path)
     return verdicts_path
 
 
@@ -137,6 +178,18 @@ def _cli(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument("--verdicts", default="results/model_verdicts.json")
     parser.add_argument(
+        "--meta-eval",
+        default="results/judge_meta_eval.json",
+        help="Where to write the inter-judge agreement/bias report. Pass an "
+        "empty string to skip it.",
+    )
+    parser.add_argument(
+        "--reference-judge",
+        default="heuristic-baseline",
+        help="Judge id to compute divergence-from-reference against in the "
+        "meta-eval report; should be independent of every model under test.",
+    )
+    parser.add_argument(
         "--judges",
         default="all",
         choices=sorted(_JUDGE_PRESETS),
@@ -144,6 +197,15 @@ def _cli(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument(
         "--prefer-engine", default="llamacpp", choices=["llamacpp", "ollama"]
+    )
+    parser.add_argument(
+        "--n-samples",
+        type=int,
+        default=1,
+        help="Independent generations per (model, test) at the same sampling "
+        "settings, so pass rates carry a variance estimate instead of a "
+        "single noisy draw (see judges.meta_eval.sample_variance). Only "
+        "applies with --models.",
     )
     parser.add_argument(
         "--no-judge",
@@ -186,7 +248,7 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         )
         runner = TestRunner(args.test_suite, loader, results_path=args.outputs)
         # run_tests overwrites the outputs file with a fresh {"outputs": [...]}.
-        runner.run_tests(args.models)
+        runner.run_tests(args.models, n_samples=args.n_samples)
 
     if args.no_judge:
         logger.info("Generation-only run (--no-judge); outputs at %s", args.outputs)
@@ -198,6 +260,8 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         verdicts_path=args.verdicts,
         max_priority=_JUDGE_PRESETS[args.judges],
         hardware_profile=args.hardware_config,
+        meta_eval_path=args.meta_eval or None,
+        reference_judge_id=args.reference_judge,
     )
     return 0
 

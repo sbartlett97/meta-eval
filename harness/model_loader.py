@@ -43,7 +43,16 @@ class GenerativeModel(Protocol):
 
     id: str
 
-    def generate(self, prompt: str, **kwargs) -> str: ...
+    def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str: ...
+
+    def generate_conversation(
+        self, turns: List[str], system_prompt: Optional[str] = None, **kwargs
+    ) -> List[str]:
+        """Run ``turns`` as a real back-and-forth: turn *n* sees the model's own
+        reply to turn *n-1* in context, not just the raw text of turn *n-1*.
+        Returns one reply per turn, same length/order as ``turns``.
+        """
+        ...
 
 
 # ---------------------------------------------------------------------- #
@@ -58,7 +67,7 @@ class OllamaModel:
     host: str = "http://localhost:11434"
     timeout_s: int = _DEFAULT_TIMEOUT_S
 
-    def generate(self, prompt: str, **kwargs) -> str:
+    def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str:
         payload = {
             "model": self.tag,
             "prompt": prompt,
@@ -68,14 +77,43 @@ class OllamaModel:
                 "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
             },
         }
-        # Rendered into the model's template as its system message by Ollama.
-        if kwargs.get("system_prompt"):
-            payload["system"] = kwargs["system_prompt"]
+        if system_prompt:
+            payload["system"] = system_prompt
         resp = requests.post(
             f"{self.host}/api/generate", json=payload, timeout=self.timeout_s
         )
         resp.raise_for_status()
         return resp.json().get("response", "")
+
+    def generate_conversation(
+        self, turns: List[str], system_prompt: Optional[str] = None, **kwargs
+    ) -> List[str]:
+        """Real multi-turn via Ollama's ``/api/chat`` (accumulates message history)."""
+        messages: List[Dict] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        options = {
+            "num_predict": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+            "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
+        }
+        replies: List[str] = []
+        for turn in turns:
+            messages.append({"role": "user", "content": turn})
+            resp = requests.post(
+                f"{self.host}/api/chat",
+                json={
+                    "model": self.tag,
+                    "messages": messages,
+                    "stream": False,
+                    "options": options,
+                },
+                timeout=self.timeout_s,
+            )
+            resp.raise_for_status()
+            reply = resp.json().get("message", {}).get("content", "")
+            messages.append({"role": "assistant", "content": reply})
+            replies.append(reply)
+        return replies
 
 
 @dataclass
@@ -103,24 +141,37 @@ class LlamaCppModel:
     engine_kwargs: Dict = field(default_factory=dict)
     mode: str = "chat"
 
-    def generate(self, prompt: str, **kwargs) -> str:
+    def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str:
         engine = llamacpp_engine.get_engine(
             repo_id=self.repo_id,
             filename=self.filename,
             additional_files=self.additional_files,
             engine_kwargs=self.engine_kwargs,
         )
-        system_prompt = kwargs.get("system_prompt")
-        gen_kwargs = {
-            "max_tokens": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
-            "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
-        }
-        if self.mode == "completion":
-            # No chat template to render a system role into: prepend it as text.
-            if system_prompt:
-                prompt = f"{system_prompt}\n\n{prompt}"
-            return engine.generate(prompt, **gen_kwargs)
-        return engine.chat(prompt, system_prompt=system_prompt, **gen_kwargs)
+        call = engine.generate if self.mode == "completion" else engine.chat
+        return call(
+            prompt,
+            system_prompt=system_prompt,
+            max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+            temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
+        )
+
+    def generate_conversation(
+        self, turns: List[str], system_prompt: Optional[str] = None, **kwargs
+    ) -> List[str]:
+        engine = llamacpp_engine.get_engine(
+            repo_id=self.repo_id,
+            filename=self.filename,
+            additional_files=self.additional_files,
+            engine_kwargs=self.engine_kwargs,
+        )
+        call = engine.generate_turns if self.mode == "completion" else engine.chat_turns
+        return call(
+            turns,
+            system_prompt=system_prompt,
+            max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+            temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
+        )
 
 
 @dataclass
@@ -134,7 +185,15 @@ class ReplicateModel:
     id: str
     model: str
 
-    def generate(self, prompt: str, **kwargs) -> str:  # pragma: no cover - needs creds
+    def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str:  # pragma: no cover - needs creds
+        raise NotImplementedError(
+            "Cloud (Replicate) generation is a scaffold. Wire up the provider SDK "
+            "and API token before use."
+        )
+
+    def generate_conversation(
+        self, turns: List[str], system_prompt: Optional[str] = None, **kwargs
+    ) -> List[str]:  # pragma: no cover - needs creds
         raise NotImplementedError(
             "Cloud (Replicate) generation is a scaffold. Wire up the provider SDK "
             "and API token before use."

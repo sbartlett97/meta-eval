@@ -19,6 +19,16 @@ logger = logging.getLogger(__name__)
 VERDICT_LABELS = ("PASS", "FAIL", "AMBIGUOUS")
 
 
+class NonRetryableJudgeError(Exception):
+    """Raise this (instead of a plain exception) for a failure that retrying
+    cannot fix -- a missing API key, an uninstalled SDK, a bad config. The
+    retry loop in ``Judge.evaluate`` gives up immediately on this without
+    burning ``max_retries * retry_backoff_s`` seconds re-trying something
+    that will fail identically every time (docs/critical-assessment.md #2.9:
+    the retry budget exists for transient failures, not permanent ones).
+    """
+
+
 @dataclass
 class Verdict:
     """A single judge's assessment of one model output."""
@@ -33,6 +43,14 @@ class Verdict:
     tokens: Optional[int] = None
     error: Optional[str] = None
     raw: Optional[str] = None  # raw model text, for debugging
+    #: True when this AMBIGUOUS verdict means "this judge is structurally
+    #: incapable of assessing this criterion" (e.g. HeuristicJudge on
+    #: factual/reasoning correctness it can't keyword-match), NOT "I read the
+    #: content and it's genuinely unclear." Conflating the two would count a
+    #: judge's abstention as real disagreement in aggregate_verdicts' vote and
+    #: judges.meta_eval's inter-judge kappa/bias stats -- both exclude
+    #: abstained verdicts the same way they exclude errored ones.
+    abstained: bool = False
 
     def __post_init__(self) -> None:
         self.verdict = _normalize_label(self.verdict)
@@ -48,6 +66,7 @@ class Verdict:
             "latency_s": self.latency_s,
             "tokens": self.tokens,
             "error": self.error,
+            "abstained": self.abstained,
         }
 
 
@@ -74,31 +93,83 @@ class Judge(ABC):
     id: str = "base-judge"
     #: Coarse provider tag (anthropic / openai / local / deterministic).
     provider: str = "base"
+    #: Additional attempts after a failed ``_evaluate`` call, with linear
+    #: backoff between them. 0 (the default) = no retry. A transient network
+    #: blip shouldn't be recorded identically to genuine judge uncertainty
+    #: (docs/critical-assessment.md #2.9) -- remote judges override this to a
+    #: small positive number; local/deterministic judges have nothing to gain
+    #: from retrying so they keep the default.
+    max_retries: int = 0
+    retry_backoff_s: float = 1.0
 
     def __init__(self) -> None:
         self.call_log: List[JudgeCallRecord] = []
 
     @abstractmethod
-    def _evaluate(self, test_id: str, model_output: str, criteria: str) -> Verdict:
-        """Backend-specific evaluation. Must return a :class:`Verdict`."""
+    def _evaluate(
+        self,
+        test_id: str,
+        model_output: str,
+        criteria: str,
+        category: str = "uncategorized",
+        metadata: Optional[dict] = None,
+    ) -> Verdict:
+        """Backend-specific evaluation. Must return a :class:`Verdict`.
 
-    def evaluate(self, test_id: str, model_output: str, criteria: str) -> Verdict:
+        ``category`` (e.g. ``"format-adherence"``) and ``metadata`` (e.g.
+        ``{"check": "json", "required_keys": [...]}``) are the suite's own
+        per-case fields -- most judges ignore them, but a judge that can run a
+        real deterministic check for a category (see ``HeuristicJudge``) needs
+        them to dispatch.
+        """
+
+    def evaluate(
+        self,
+        test_id: str,
+        model_output: str,
+        criteria: str,
+        category: str = "uncategorized",
+        metadata: Optional[dict] = None,
+    ) -> Verdict:
         """Evaluate one model output; never raises -- errors become AMBIGUOUS.
 
-        A judge that errors should not abort a whole evaluation run, so failures
-        are captured as an AMBIGUOUS verdict with ``error`` set and confidence 0.
+        Retries up to ``max_retries`` times (linear backoff) before giving up.
+        A judge that still errors after retries should not abort a whole
+        evaluation run, so the failure is captured as an AMBIGUOUS verdict with
+        ``error`` set and confidence 0 -- callers that need to tell "the judge
+        was genuinely uncertain" apart from "the call failed" should check
+        ``error`` (aggregate_verdicts / judges.meta_eval already do).
         """
         start = time.monotonic()
-        try:
-            verdict = self._evaluate(test_id, model_output, criteria)
-        except Exception as exc:  # noqa: BLE001 -- deliberately broad; see docstring
-            logger.warning("Judge %s failed on %s: %s", self.id, test_id, exc)
+        verdict = None
+        last_exc: Optional[Exception] = None
+        attempts = self.max_retries + 1
+        for attempt in range(1, attempts + 1):
+            try:
+                verdict = self._evaluate(test_id, model_output, criteria, category, metadata or {})
+                last_exc = None
+                break
+            except NonRetryableJudgeError as exc:
+                last_exc = exc
+                break  # no point retrying a missing API key / uninstalled SDK
+            except Exception as exc:  # noqa: BLE001 -- deliberately broad; see docstring
+                last_exc = exc
+                if attempt < attempts:
+                    logger.warning(
+                        "Judge %s failed on %s (attempt %d/%d): %s -- retrying",
+                        self.id, test_id, attempt, attempts, exc,
+                    )
+                    time.sleep(self.retry_backoff_s * attempt)
+        if last_exc is not None:
+            logger.warning(
+                "Judge %s failed on %s after %d attempt(s): %s", self.id, test_id, attempts, last_exc
+            )
             verdict = Verdict(
                 verdict="AMBIGUOUS",
                 confidence=0.0,
                 judge_id=self.id,
                 test_id=test_id,
-                error=str(exc),
+                error=str(last_exc),
             )
         if verdict.latency_s is None:
             verdict.latency_s = time.monotonic() - start

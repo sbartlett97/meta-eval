@@ -52,7 +52,7 @@ class LocalLlamaCppJudge(Judge):
         gguf_file: Optional[str] = None,
         additional_files: Optional[Sequence[str]] = None,
         engine_kwargs: Optional[Dict] = None,
-        max_tokens: int = 256,
+        max_tokens: int = 1024,
         temperature: float = 0.0,
     ) -> None:
         super().__init__()
@@ -64,7 +64,14 @@ class LocalLlamaCppJudge(Judge):
         self.max_tokens = max_tokens
         self.temperature = temperature
 
-    def _evaluate(self, test_id: str, model_output: str, criteria: str) -> Verdict:
+    def _evaluate(
+        self,
+        test_id: str,
+        model_output: str,
+        criteria: str,
+        category: str = "uncategorized",
+        metadata: Optional[dict] = None,
+    ) -> Verdict:
         prompt = format_judge_prompt(test_id, model_output, criteria)
         engine = get_engine(
             repo_id=self.model_id,
