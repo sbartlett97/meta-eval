@@ -163,10 +163,11 @@ python harness/evaluator.py --models gemma-4-12b --judges all --prefer-engine ol
 
 `--judges` selects a preset: `all` (every enabled judge), `cheap` (priority ≤ 1
 — the remote API judges plus the free deterministic heuristic; **no local GGUF
-loads**), or `pilot`.
+loads**), or `pilot`. `--judge-ids a,b` picks judges by id instead.
 
-Pass `--n-samples N` to draw `N` independent generations per (model, test) at
-the same sampling settings instead of one — a single non-deterministic draw
+`--n-samples N` (default **3**) draws `N` independent generations per (model,
+test); sample `i` uses seed `--seed + i`, recorded on every row. A single
+non-deterministic draw
 otherwise turns "did the model pass" into a noisy one-shot estimate with no
 uncertainty measure. Once judged, `judges.meta_eval.sample_variance` (folded
 into `results/judge_meta_eval.json` automatically when `--n-samples` > 1)
@@ -182,6 +183,13 @@ actually selected — see [Weight hydration](#weight-hydration)). Pass
 ```bash
 python harness/evaluator.py --outputs results/model_outputs.json --judges cheap
 ```
+
+An outputs file from before the current schema (no `provenance`,
+`sample_index` or `turns`, such as the 2026-08 `results/model_outputs.json`) is
+refused with exit code 2: its system prompts were dropped and its multi-turn
+cases collapsed. Regenerate it, or pass `--allow-legacy` to judge it anyway.
+A generation run is checkpointed as it goes; continue a crashed run with
+`--resume`, and replace a finished one only with `--overwrite`.
 
 ### Generate outputs only (no judges)
 
@@ -226,9 +234,9 @@ checkpoints that never appear in `config/models.yaml`.
 aggregate_verdicts` is only ever a naive per-item majority vote. Run
 automatically at the end of `run_evaluation` (writes
 `results/judge_meta_eval.json`; pass `--meta-eval ""` to skip, or
-`--reference-judge <id>` to change which judge divergence is measured
-against — default `heuristic-baseline`, the one judge guaranteed independent
-of every model under test). It reports, per batch of judged rows:
+`--reference-judge <id>` to add each judge's divergence from one judge you
+trust — there is no default; the keyword heuristic's refusal verdicts are
+advisory only and never vote). It reports, per batch of judged rows:
 
 - **Pairwise inter-judge agreement + Cohen's kappa** — raw agreement % is
   inflated when judges are individually skewed toward one label; kappa
