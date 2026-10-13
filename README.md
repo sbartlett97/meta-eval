@@ -67,7 +67,7 @@ writes `results/judge_meta_eval.json` — the actual judge meta-evaluation (see
 [Judge meta-evaluation](#judge-meta-evaluation)).
 
 Every judge — remote or local — implements the same
-`Judge.evaluate(test_id, model_output, criteria, category, metadata) -> Verdict`
+`Judge.evaluate(item: EvalItem) -> Verdict` (`judges/items.py`; the item carries the request, response, criterion and `item_type`)
 contract, so the panel calls Claude, a local in-process llama.cpp model, or the
 heuristic baseline through identical code. Local models and judges that
 reference the same GGUF reuse a **single in-process engine**, and the engine

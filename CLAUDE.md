@@ -115,7 +115,7 @@ docs/critical-assessment.md  # the audit this round of fixes addresses
   happens on the first `generate`. Keep it that way so the config/factory paths
   and the whole test suite run without llama-cpp-python installed.
 - **Every judge implements the same contract:**
-  `Judge.evaluate(test_id, model_output, criteria, category, metadata) -> Verdict`.
+  `Judge.evaluate(item: EvalItem) -> Verdict` (`judges/items.py`; the item carries the request, response, criterion and `item_type`).
   The base class wraps `_evaluate`, retries up to `max_retries` times (remote
   judges default to 2; a `NonRetryableJudgeError` — missing API key,
   uninstalled SDK — skips retrying entirely) and, on final failure, produces an

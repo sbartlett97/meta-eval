@@ -14,32 +14,9 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from judges.base import Judge, Verdict
-from judges.heuristic_judge import exact_check_applies
+from judges.items import EvalItem, exact_check_applies  # noqa: F401 -- EvalItem re-exported
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class EvalItem:
-    """One (test, model output) pair to judge -- the unit of :meth:`evaluate_batch`."""
-
-    test_id: str
-    model_output: str
-    criteria: str = ""
-    #: Suite category (e.g. "format-adherence"). Lets a judge dispatch on the
-    #: kind of check being asked for -- see judges/heuristic_judge.py, which
-    #: uses it to run real deterministic checks instead of guessing from prose.
-    category: str = "uncategorized"
-    #: The test case's free-form ``metadata`` (e.g. ``{"check": "json",
-    #: "required_keys": [...]}``). Carries the params a deterministic check
-    #: needs -- see judges/format_checks.py -- without a judge having to parse
-    #: them back out of the English ``criteria`` prose.
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    #: The user turn(s) the model answered (one for a single-turn case) and
-    #: the system prompt it ran under. A judge that sees only the response
-    #: cannot tell whether it fits the request.
-    turns: Tuple[str, ...] = ()
-    system_prompt: Optional[str] = None
 
 
 @dataclass
@@ -103,7 +80,7 @@ class JudgePanel:
         if (
             self._has_exact_judge
             and not judge.runs_exact_checks
-            and exact_check_applies(item.category, item.criteria, item.metadata)
+            and exact_check_applies(item)
         ):
             return Verdict(
                 verdict="AMBIGUOUS",
@@ -113,9 +90,7 @@ class JudgePanel:
                 rationale="Skipped: an exact deterministic check decides this item.",
                 abstained=True,
             )
-        return judge.evaluate(
-            item.test_id, item.model_output, item.criteria, item.category, item.metadata
-        )
+        return judge.evaluate(item)
 
     def cost_summary(self) -> Dict[str, dict]:
         """Aggregate per-judge latency/token stats from call logs."""

@@ -11,6 +11,7 @@ import os
 import time
 from typing import Optional
 
+from judges.items import EvalItem
 from judges.base import Judge, NonRetryableJudgeError, Verdict
 from judges.prompts import format_judge_prompt, parse_json_from_response
 
@@ -64,16 +65,10 @@ class ClaudeJudge(Judge):
         self._client = anthropic.Anthropic(api_key=self._api_key)
         return self._client
 
-    def _evaluate(
-        self,
-        test_id: str,
-        model_output: str,
-        criteria: str,
-        category: str = "uncategorized",
-        metadata: Optional[dict] = None,
-    ) -> Verdict:
+    def _evaluate(self, item: EvalItem) -> Verdict:
+        test_id = item.test_id
         client = self._ensure_client()
-        prompt = format_judge_prompt(test_id, model_output, criteria)
+        prompt = format_judge_prompt(test_id, item.model_output, item.criteria)
 
         start = time.monotonic()
         resp = client.messages.create(

@@ -10,7 +10,10 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
+
+if TYPE_CHECKING:  # pragma: no cover
+    from judges.items import EvalItem
 
 logger = logging.getLogger(__name__)
 
@@ -123,31 +126,16 @@ class Judge(ABC):
         return {"id": self.id, "provider": self.provider}
 
     @abstractmethod
-    def _evaluate(
-        self,
-        test_id: str,
-        model_output: str,
-        criteria: str,
-        category: str = "uncategorized",
-        metadata: Optional[dict] = None,
-    ) -> Verdict:
-        """Backend-specific evaluation. Must return a :class:`Verdict`.
+    def _evaluate(self, item: "EvalItem") -> Verdict:
+        """Backend-specific evaluation of one item. Must return a :class:`Verdict`.
 
-        ``category`` (e.g. ``"format-adherence"``) and ``metadata`` (e.g.
-        ``{"check": "json", "required_keys": [...]}``) are the suite's own
-        per-case fields -- most judges ignore them, but a judge that can run a
-        real deterministic check for a category (see ``HeuristicJudge``) needs
-        them to dispatch.
+        ``item`` (judges/items.py) carries the request (``turns``,
+        ``system_prompt``), the response, the criterion, the suite's
+        ``category`` / ``metadata`` and the ``item_type`` that selects the
+        rubric. Most judges use only some of these.
         """
 
-    def evaluate(
-        self,
-        test_id: str,
-        model_output: str,
-        criteria: str,
-        category: str = "uncategorized",
-        metadata: Optional[dict] = None,
-    ) -> Verdict:
+    def evaluate(self, item: "EvalItem") -> Verdict:
         """Evaluate one model output; never raises -- errors become AMBIGUOUS.
 
         Retries up to ``max_retries`` times (linear backoff) before giving up.
@@ -157,6 +145,7 @@ class Judge(ABC):
         was genuinely uncertain" apart from "the call failed" should check
         ``error`` (aggregate_verdicts / judges.meta_eval already do).
         """
+        test_id = item.test_id
         start = time.monotonic()
         verdict = None
         last_exc: Optional[Exception] = None
@@ -165,7 +154,7 @@ class Judge(ABC):
         for attempt in range(1, attempts + 1):
             attempts_made = attempt
             try:
-                verdict = self._evaluate(test_id, model_output, criteria, category, metadata or {})
+                verdict = self._evaluate(item)
                 last_exc = None
                 break
             except NonRetryableJudgeError as exc:

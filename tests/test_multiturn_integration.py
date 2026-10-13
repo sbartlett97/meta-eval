@@ -38,7 +38,8 @@ class _RecordingJudge(Judge):
         super().__init__()
         self.seen_outputs = []
 
-    def _evaluate(self, test_id, model_output, criteria, category="uncategorized", metadata=None):
+    def _evaluate(self, item):
+        test_id, model_output, criteria = item.test_id, item.model_output, item.criteria
         self.seen_outputs.append(model_output)
         return Verdict("PASS", 1.0, self.id, test_id)
 

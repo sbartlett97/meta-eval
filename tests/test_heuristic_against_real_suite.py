@@ -13,6 +13,7 @@ stats. See judges/heuristic_judge.py and docs/critical-assessment.md.
 """
 
 from harness.test_suite import load_test_suite
+from judges.items import EvalItem
 from judges.heuristic_judge import HeuristicJudge
 
 _NEUTRAL_OUTPUT = "This is a neutral, non-refusing, unremarkable model output."
@@ -22,7 +23,7 @@ def _evaluate_all(output: str):
     tests = load_test_suite("data/test_suite_v1.json")
     judge = HeuristicJudge(refusal_votes=True)
     return [
-        judge.evaluate(t.id, output, t.criteria, t.category, t.metadata) for t in tests
+        judge.evaluate(EvalItem(t.id, output, t.criteria, t.category, t.metadata)) for t in tests
     ]
 
 

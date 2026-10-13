@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Sequence
 
 from harness.llamacpp_engine import get_engine
 from harness import provenance
+from judges.items import EvalItem
 from judges.base import Judge, Verdict
 from judges.prompts import format_judge_prompt, parse_json_from_response
 
@@ -82,15 +83,9 @@ class LocalLlamaCppJudge(Judge):
             "weights": provenance.weights_info(engine.resolved_path),
         }
 
-    def _evaluate(
-        self,
-        test_id: str,
-        model_output: str,
-        criteria: str,
-        category: str = "uncategorized",
-        metadata: Optional[dict] = None,
-    ) -> Verdict:
-        prompt = format_judge_prompt(test_id, model_output, criteria)
+    def _evaluate(self, item: EvalItem) -> Verdict:
+        test_id = item.test_id
+        prompt = format_judge_prompt(test_id, item.model_output, item.criteria)
         engine = get_engine(
             repo_id=self.model_id,
             filename=self.gguf_file,

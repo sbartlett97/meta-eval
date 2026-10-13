@@ -136,10 +136,15 @@ def run_evaluation(
             metadata=row.get("metadata") or {},
             turns=tuple(row.get("turns") or ()),
             system_prompt=row.get("system_prompt"),
+            item_type=row.get("item_type") or "",  # "" -> inferred (judges/items.py)
+            severity_tier=row.get("severity_tier"),
+            reference_answer=row.get("reference_answer"),
         )
         for row in judged_rows
     ]
     results = iter(panel.evaluate_batch(items))
+    # The resolved item type of each judged row, for slicing verdicts later.
+    item_types = {id(row): item.item_type for row, item in zip(judged_rows, items)}
 
     records = [
         {
@@ -155,6 +160,8 @@ def run_evaluation(
             "technique": row.get("technique", ""),
             "severity": row.get("severity", ""),
             "source": row.get("source", ""),
+            "item_type": item_types.get(id(row)),
+            "severity_tier": row.get("severity_tier"),
             **_judgement(row, results),
         }
         for row in rows

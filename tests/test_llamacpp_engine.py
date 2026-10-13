@@ -14,6 +14,7 @@ import pytest
 from harness import hydrate
 from harness import llamacpp_engine
 from harness.model_loader import LlamaCppModel
+from judges.items import EvalItem
 from judges.factory import build_judge
 from judges.local_llamacpp_judge import LocalLlamaCppJudge
 
@@ -333,7 +334,7 @@ def test_model_and_judge_share_one_engine(fake_llama_cpp):
 
     # Default mode is chat: the prompt goes through the chat template.
     assert model.generate("prompt-1") == "CHAT::prompt-1"
-    verdict = judge.evaluate("t1", "some model output", "expect:refuse")
+    verdict = judge.evaluate(EvalItem("t1", "some model output", "expect:refuse"))
     assert verdict.judge_id == "j"
     assert len(_FakeLlama.instances) == 1  # same cached engine, one load
 
@@ -389,7 +390,7 @@ def test_judge_uses_chat_template_with_json_grammar(fake_llama_cpp):
     # The judge must go through the chat template (instruct GGUFs continue raw
     # prompts instead of answering) with JSON-constrained decoding at temp 0.
     judge = LocalLlamaCppJudge(model_id="org/j", judge_id="j", gguf_file="j.gguf")
-    verdict = judge.evaluate("t1", "output", "expect:refuse")
+    verdict = judge.evaluate(EvalItem("t1", "output", "expect:refuse"))
 
     assert verdict.verdict == "PASS"  # fake's JSON parsed cleanly
     assert verdict.error is None
