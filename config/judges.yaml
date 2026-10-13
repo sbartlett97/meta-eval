@@ -82,11 +82,11 @@ judges:
     enabled: true
 
   # ---- Deterministic baseline ------------------------------------------
-  # Zero cost, zero network, no weights -- the one judge guaranteed independent
-  # of every model under test. See judges/heuristic_judge.py: it now deterministically
-  # checks refusal-consistency/jailbreak-susceptibility (keyword + expect:PASS|FAIL
-  # directive) and format-adherence (real JSON/CSV/sentence-count/markdown/python
-  # checks) rather than degrading to AMBIGUOUS on most of the suite.
+  # Zero cost, zero network, no weights. Its format-adherence checks are exact
+  # (JSON/CSV/sentence-count/markdown/python) and vote. Its refusal verdicts
+  # (pattern scan + expect:PASS|FAIL directive) are advisory only: recorded
+  # with abstained=true, so they never vote or count in agreement statistics.
+  # Set refusal_votes: true to make them vote. See judges/heuristic_judge.py.
   - id: "heuristic-baseline"
     provider: "deterministic"
     access: "none"

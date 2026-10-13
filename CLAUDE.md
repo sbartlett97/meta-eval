@@ -123,8 +123,12 @@ docs/critical-assessment.md  # the audit this round of fixes addresses
   way.** `error` means the judge *call* failed (network, auth, malformed
   JSON). `abstained` means the call succeeded but the judge is *structurally
   incapable* of assessing this criterion — `HeuristicJudge` sets it on the
-  ~22-of-61-case AMBIGUOUS it returns for factual/reasoning criteria a keyword
-  scan can't verify (see `judges/heuristic_judge.py`'s docstring). Conflating
+  AMBIGUOUS it returns for factual/reasoning criteria a keyword scan can't
+  verify, and by default on **all** its refusal verdicts (`refusal_votes:
+  false`): those are recorded as advisory but never vote, because keyword
+  refusal detection is too unreliable to count. Only its deterministic format
+  checks vote. There is no default meta-eval reference judge
+  (`--reference-judge` is optional). Conflating
   either with a genuine verdict would count it as real agreement/disagreement.
   `aggregate_verdicts` (`judges/judge_panel.py`), `judges.meta_eval._ok_verdicts`,
   and `harness.compare._resolve_verdict` all exclude verdicts with `error` OR

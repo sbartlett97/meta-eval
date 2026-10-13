@@ -85,7 +85,7 @@ def run_evaluation(
     max_priority: Optional[int] = None,
     hardware_profile: str = "config/hardware_profile.yaml",
     meta_eval_path: Optional[str] = "results/judge_meta_eval.json",
-    reference_judge_id: str = "heuristic-baseline",
+    reference_judge_id: Optional[str] = None,
     judge_ids: Optional[List[str]] = None,
     allow_legacy: bool = False,
 ) -> str:
@@ -290,9 +290,9 @@ def _cli(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument(
         "--reference-judge",
-        default="heuristic-baseline",
-        help="Judge id to compute divergence-from-reference against in the "
-        "meta-eval report; should be independent of every model under test.",
+        default=None,
+        help="Optional judge id to compute divergence-from-reference against in "
+        "the meta-eval report; pick one independent of every model under test.",
     )
     parser.add_argument(
         "--judges",

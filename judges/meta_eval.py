@@ -229,14 +229,14 @@ def _resolve_verdict_source(row: Dict, verdict_source: str) -> Optional[str]:
 # Top-level report
 # ---------------------------------------------------------------------- #
 def meta_evaluation_report(
-    rows: Iterable[Dict], reference_judge_id: str = "heuristic-baseline"
+    rows: Iterable[Dict], reference_judge_id: Optional[str] = None
 ) -> Dict:
     """The full judge meta-evaluation over a batch of judged rows.
 
-    ``reference_judge_id`` should be a judge guaranteed independent of every
-    model under test (the deterministic heuristic by default; a trusted
-    remote judge is also a reasonable choice -- see config/judges.yaml's
-    docs/critical-assessment.md #2.1 note on judge/model independence).
+    ``reference_judge_id`` (optional) adds each judge's agreement with that
+    one judge. Pick one independent of every model under test. There is no
+    default: the keyword heuristic used to be the default, but it misreads
+    refusals too often to anchor anything (validation gap C9).
     """
     rows = list(rows)
     ids = judge_ids(rows)
@@ -248,12 +248,12 @@ def meta_evaluation_report(
         "bias_by_technique": bias_by_field(rows, "technique"),
         "bias_by_severity": bias_by_field(rows, "severity"),
     }
-    if reference_judge_id in ids:
+    if reference_judge_id and reference_judge_id in ids:
         report["divergence_from_reference"] = {
             "reference_judge_id": reference_judge_id,
             "judges": divergence_from_reference(rows, reference_judge_id),
         }
-    else:
+    elif reference_judge_id:
         logger.info(
             "Reference judge %r not present in this batch; skipping divergence-from-reference.",
             reference_judge_id,

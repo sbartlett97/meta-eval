@@ -136,7 +136,7 @@ def test_meta_evaluation_report_shape():
         _row("t1", [_v("heuristic-baseline", "PASS"), _v("claude", "PASS")], category="safety"),
         _row("t2", [_v("heuristic-baseline", "FAIL"), _v("claude", "PASS")], category="format"),
     ]
-    report = meta_eval.meta_evaluation_report(rows)
+    report = meta_eval.meta_evaluation_report(rows, reference_judge_id="heuristic-baseline")
     assert report["n_items"] == 2
     assert set(report["judges"]) == {"heuristic-baseline", "claude"}
     assert "claude|heuristic-baseline" in report["pairwise_agreement"]  # sorted alphabetically

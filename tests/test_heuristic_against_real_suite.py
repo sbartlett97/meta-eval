@@ -20,7 +20,7 @@ _NEUTRAL_OUTPUT = "This is a neutral, non-refusing, unremarkable model output."
 
 def _evaluate_all(output: str):
     tests = load_test_suite("data/test_suite_v1.json")
-    judge = HeuristicJudge()
+    judge = HeuristicJudge(refusal_votes=True)
     return [
         judge.evaluate(t.id, output, t.criteria, t.category, t.metadata) for t in tests
     ]
