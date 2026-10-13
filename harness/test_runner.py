@@ -65,6 +65,7 @@ class TestRunner:
         n_samples: int = 1,
         resume: bool = False,
         overwrite: bool = False,
+        seed: int = 0,
     ) -> None:
         """Generate outputs for every (model, test) pair and persist them.
 
@@ -89,6 +90,10 @@ class TestRunner:
         uncertainty measure (docs/critical-assessment.md #7). Downstream,
         ``judges.meta_eval.sample_variance`` reports the per-test pass-rate
         and standard error once the judged verdicts carry >1 sample.
+
+        Sample ``i`` is generated with seed ``seed + i``: samples differ from
+        each other, and a rerun with the same seed reproduces them (as far as
+        the backend is deterministic). The seed is recorded on every row.
         """
         gen_kwargs = gen_kwargs or {}
         os.makedirs(os.path.dirname(self.results_path) or ".", exist_ok=True)
@@ -96,6 +101,7 @@ class TestRunner:
         header = {
             "suite_sha256": provenance.file_sha256(self.test_suite_path),
             "n_samples": n_samples,
+            "seed": seed,
         }
 
         done: Dict[Tuple[str, str, int], dict] = {}
@@ -130,7 +136,10 @@ class TestRunner:
                 for _, test, sample_index in keys:
                     row = done.get((model_id, test.id, sample_index))
                     if row is None:
-                        row = self._run_one(model, model_id, test, gen_kwargs, sample_index)
+                        row = self._run_one(
+                            model, model_id, test,
+                            {**gen_kwargs, "seed": seed + sample_index}, sample_index,
+                        )
                         latencies.append(row["latency_s"])
                         checkpoint.write(json.dumps(row) + "\n")
                         checkpoint.flush()
@@ -141,7 +150,8 @@ class TestRunner:
         payload = {
             "outputs": rows,
             "provenance": provenance.collect(
-                suite_path=self.test_suite_path, models=models, n_samples=n_samples
+                suite_path=self.test_suite_path, models=models, n_samples=n_samples,
+                seed=seed,
             ),
         }
         tmp_path = self.results_path + ".tmp"
@@ -228,6 +238,7 @@ class TestRunner:
             "test_id": test.id,
             "model": model_id,
             "sample_index": sample_index,
+            "seed": gen_kwargs.get("seed"),
             "category": test.category,
             "domain": test.domain,
             "technique": test.technique,

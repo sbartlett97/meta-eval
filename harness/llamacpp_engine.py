@@ -359,11 +359,7 @@ class LlamaCppEngine:
         with _CACHE_LOCK:
             _ENGINE_CACHE.move_to_end(self.key)  # touch: most-recently used
         full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
-        result = self._llm.create_completion(
-            full_prompt,
-            max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
-            temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
-        )
+        result = self._llm.create_completion(full_prompt, **_sampling_kwargs(kwargs))
         self.last_finish_reasons = [_finish_reason(result)]
         return result["choices"][0]["text"]
 
@@ -382,11 +378,7 @@ class LlamaCppEngine:
         self.last_finish_reasons = []
         for turn in turns:
             transcript += turn
-            result = self._llm.create_completion(
-                transcript,
-                max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
-                temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
-            )
+            result = self._llm.create_completion(transcript, **_sampling_kwargs(kwargs))
             reply = result["choices"][0]["text"]
             self.last_finish_reasons.append(_finish_reason(result))
             transcript += reply
@@ -412,10 +404,7 @@ class LlamaCppEngine:
         self._ensure_loaded()
         with _CACHE_LOCK:
             _ENGINE_CACHE.move_to_end(self.key)  # touch: most-recently used
-        call_kwargs = {
-            "max_tokens": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
-            "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
-        }
+        call_kwargs = _sampling_kwargs(kwargs)
         if json_only:
             call_kwargs["response_format"] = {"type": "json_object"}
         messages = []
@@ -440,10 +429,7 @@ class LlamaCppEngine:
         self._ensure_loaded()
         with _CACHE_LOCK:
             _ENGINE_CACHE.move_to_end(self.key)
-        call_kwargs = {
-            "max_tokens": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
-            "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
-        }
+        call_kwargs = _sampling_kwargs(kwargs)
         if json_only:
             call_kwargs["response_format"] = {"type": "json_object"}
         messages = []
@@ -463,6 +449,17 @@ class LlamaCppEngine:
             messages.append({"role": "assistant", "content": reply})
             replies.append(reply)
         return replies
+
+
+def _sampling_kwargs(kwargs: Dict) -> Dict:
+    """max_tokens / temperature (with defaults) and, if given, seed."""
+    out = {
+        "max_tokens": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+        "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
+    }
+    if kwargs.get("seed") is not None:
+        out["seed"] = kwargs["seed"]
+    return out
 
 
 def _finish_reason(result: Dict) -> Optional[str]:

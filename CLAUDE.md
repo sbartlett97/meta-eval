@@ -220,7 +220,7 @@ python harness/evaluator.py --outputs results/model_outputs.json --judges cheap 
 python harness/evaluator.py --outputs old.json --allow-legacy   # judge a pre-fix outputs file anyway (refused by default)
 python harness/evaluator.py --models gemma-4-12b --no-judge                    # generate only
 python harness/evaluator.py --models gemma-4-12b --judges cheap --no-hydrate   # skip HF download
-python harness/evaluator.py --models gemma-4-12b --n-samples 3                 # repeated sampling
+python harness/evaluator.py --models gemma-4-12b --n-samples 1 --seed 7        # one sample (default is 3); sample i uses seed 7+i
 python harness/evaluator.py --models gemma-4-12b --resume      # continue a crashed run from its checkpoint
 python harness/evaluator.py --models gemma-4-12b --overwrite   # replace an existing outputs file
 

@@ -171,7 +171,7 @@ def test_resume_reruns_errored_rows(tmp_path):
     checkpoint = tmp_path / "outputs.json.partial.jsonl"
     rows = _read_outputs(out)
     header = {"header": {"suite_sha256": json.loads(out.read_text())["provenance"]["suite_sha256"],
-                         "n_samples": 1}}
+                         "n_samples": 1, "seed": 0}}
     checkpoint.write_text("\n".join(json.dumps(x) for x in [header, *rows]) + "\n")
 
     model = _FakeModel()
@@ -331,3 +331,35 @@ def test_non_reasoning_rows_have_no_reasoning_fields_set(tmp_path):
     row = _read_outputs(out)[0]
     assert row["reasoning"] is None and row["reasoning_complete"] is None
     assert row["output"] == row["raw_replies"][0] == "out:p1"
+
+
+
+# ---------------------------------------------------------------------- #
+# Seeds (validation gap C19)
+# ---------------------------------------------------------------------- #
+def test_each_sample_gets_its_own_recorded_seed(tmp_path):
+    out = tmp_path / "outputs.json"
+    model = _FakeModel()
+    Runner(_write_suite(tmp_path), _FakeLoader(model), results_path=str(out)).run_tests(
+        ["m"], n_samples=3, seed=100
+    )
+    # t1's three samples, then t2's: seed + sample_index each time.
+    assert [c["seed"] for c in model.calls] == [100, 101, 102, 100, 101, 102]
+    rows = _read_outputs(out)
+    assert [(r["sample_index"], r["seed"]) for r in rows[:3]] == [(0, 100), (1, 101), (2, 102)]
+    assert json.loads(out.read_text())["provenance"]["seed"] == 100
+
+
+def test_resume_refuses_a_checkpoint_with_a_different_seed(tmp_path):
+    import pytest
+
+    from harness.test_runner import CheckpointMismatchError
+
+    out = tmp_path / "outputs.json"
+    suite = _write_suite(tmp_path)
+    with pytest.raises(KeyboardInterrupt):
+        Runner(suite, _FakeLoader(_CrashAfter(1)), results_path=str(out)).run_tests(["m"], seed=1)
+    with pytest.raises(CheckpointMismatchError, match="seed"):
+        Runner(suite, _FakeLoader(_FakeModel()), results_path=str(out)).run_tests(
+            ["m"], seed=2, resume=True
+        )

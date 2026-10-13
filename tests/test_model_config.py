@@ -74,3 +74,23 @@ def test_ollama_model_records_done_reason(monkeypatch):
     assert model.generate("q") == "hi" and model.last_finish_reasons == ["stop"]
     assert model.generate_conversation(["q1", "q2"]) == ["a", "b"]
     assert model.last_finish_reasons == ["stop", "length"]
+
+
+
+def test_ollama_sends_the_seed_as_an_option(monkeypatch):
+    from harness import model_loader
+
+    sent = []
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"response": "x", "done_reason": "stop"}
+
+    monkeypatch.setattr(
+        model_loader.requests, "post", lambda url, json=None, **k: sent.append(json) or _Resp()
+    )
+    model_loader.OllamaModel(id="m", tag="m").generate("q", seed=5)
+    assert sent[0]["options"]["seed"] == 5

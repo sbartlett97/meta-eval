@@ -58,6 +58,16 @@ class GenerativeModel(Protocol):
 # ---------------------------------------------------------------------- #
 # Backend implementations
 # ---------------------------------------------------------------------- #
+def _ollama_options(kwargs: Dict) -> Dict:
+    options = {
+        "num_predict": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+        "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
+    }
+    if kwargs.get("seed") is not None:
+        options["seed"] = kwargs["seed"]
+    return options
+
+
 @dataclass
 class OllamaModel:
     """Test model served by the local Ollama daemon (http://localhost:11434)."""
@@ -75,10 +85,7 @@ class OllamaModel:
             "model": self.tag,
             "prompt": prompt,
             "stream": False,
-            "options": {
-                "num_predict": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
-                "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
-            },
+            "options": _ollama_options(kwargs),
         }
         if system_prompt:
             payload["system"] = system_prompt
@@ -97,10 +104,7 @@ class OllamaModel:
         messages: List[Dict] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        options = {
-            "num_predict": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
-            "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
-        }
+        options = _ollama_options(kwargs)
         replies: List[str] = []
         finish_reasons: List[Optional[str]] = []
         for turn in turns:
@@ -172,6 +176,7 @@ class LlamaCppModel:
             system_prompt=system_prompt,
             max_tokens=kwargs.get("max_tokens", self.max_tokens),
             temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
+            seed=kwargs.get("seed"),
         )
         self.last_finish_reasons = list(engine.last_finish_reasons)
         return text
@@ -191,6 +196,7 @@ class LlamaCppModel:
             system_prompt=system_prompt,
             max_tokens=kwargs.get("max_tokens", self.max_tokens),
             temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
+            seed=kwargs.get("seed"),
         )
         self.last_finish_reasons = list(engine.last_finish_reasons)
         return replies

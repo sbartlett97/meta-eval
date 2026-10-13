@@ -41,15 +41,17 @@ class _FakeLlama:
     #: What every completion reports; a test sets "length" to simulate a cut-off.
     finish_reason = "stop"
 
-    def create_completion(self, prompt, max_tokens=None, temperature=None):
+    def create_completion(self, prompt, max_tokens=None, temperature=None, seed=None):
         self.calls.append(
-            {"prompt": prompt, "max_tokens": max_tokens, "temperature": temperature}
+            {"prompt": prompt, "max_tokens": max_tokens, "temperature": temperature,
+             "seed": seed}
         )
         return {"choices": [{"text": f"OUT::{prompt}", "finish_reason": self.finish_reason}]}
 
-    def create_chat_completion(self, messages, max_tokens=None, temperature=None,
+    def create_chat_completion(self, messages, max_tokens=None, temperature=None, seed=None,
                                response_format=None):
         self.chat_calls.append({
+            "seed": seed,
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
@@ -620,3 +622,17 @@ def test_model_reports_finish_reasons_per_turn(fake_llama_cpp):
         assert model.last_finish_reasons == ["length", "length"]
     finally:
         _FakeLlama.finish_reason = "stop"
+
+
+
+def test_seed_reaches_llama_cpp_for_every_turn(fake_llama_cpp):
+    model = LlamaCppModel(id="m", repo_id="it/repo", filename="m.gguf")
+    model.generate("hello", seed=7)
+    model.generate_conversation(["a", "b"], seed=8)
+    assert [c["seed"] for c in _FakeLlama.instances[0].chat_calls] == [7, 8, 8]
+
+
+def test_no_seed_means_none_is_sent(fake_llama_cpp):
+    model = LlamaCppModel(id="m", repo_id="base/repo", filename="m.gguf", mode="completion")
+    model.generate("hello")
+    assert _FakeLlama.instances[0].calls[0]["seed"] is None

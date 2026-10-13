@@ -314,11 +314,18 @@ def _cli(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--n-samples",
         type=int,
-        default=1,
+        default=3,
         help="Independent generations per (model, test) at the same sampling "
         "settings, so pass rates carry a variance estimate instead of a "
         "single noisy draw (see judges.meta_eval.sample_variance). Only "
         "applies with --models.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Base seed for generation; sample i uses seed + i. Recorded on "
+        "every output row. Only applies with --models.",
     )
     parser.add_argument(
         "--resume",
@@ -392,7 +399,7 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         try:
             runner.run_tests(
                 args.models, n_samples=args.n_samples,
-                resume=args.resume, overwrite=args.overwrite,
+                resume=args.resume, overwrite=args.overwrite, seed=args.seed,
             )
         except (FileExistsError, CheckpointMismatchError) as exc:
             logger.error("%s", exc)
