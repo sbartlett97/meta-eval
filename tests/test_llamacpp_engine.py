@@ -38,11 +38,14 @@ class _FakeLlama:
     def from_pretrained(cls, repo_id=None, filename=None, **kwargs):
         return cls(model_path=None, _repo_id=repo_id, _filename=filename, **kwargs)
 
+    #: What every completion reports; a test sets "length" to simulate a cut-off.
+    finish_reason = "stop"
+
     def create_completion(self, prompt, max_tokens=None, temperature=None):
         self.calls.append(
             {"prompt": prompt, "max_tokens": max_tokens, "temperature": temperature}
         )
-        return {"choices": [{"text": f"OUT::{prompt}"}]}
+        return {"choices": [{"text": f"OUT::{prompt}", "finish_reason": self.finish_reason}]}
 
     def create_chat_completion(self, messages, max_tokens=None, temperature=None,
                                response_format=None):
@@ -56,7 +59,7 @@ class _FakeLlama:
             content = '{"verdict": "PASS", "confidence": 0.9, "rationale": "ok"}'
         else:  # echo, so tests can assert the prompt went through the chat path
             content = f"CHAT::{messages[-1]['content']}"
-        return {"choices": [{"message": {"content": content}}]}
+        return {"choices": [{"message": {"content": content}, "finish_reason": self.finish_reason}]}
 
     def close(self):
         self.closed = True
@@ -577,3 +580,43 @@ def test_exact_gguf_file_and_additional_files_are_captured():
     (spec,) = hydrate.collect_weights(models, {})
     assert spec.filename == "Qwythos-9B-Claude-Mythos-5-1M-BF16.gguf"
     assert spec.additional_files == ("mmproj-F16.gguf",)
+
+
+# ---------------------------------------------------------------------- #
+# Context window per entry + truncation reporting (validation gaps C6, C7)
+# ---------------------------------------------------------------------- #
+def test_n_ctx_for_uses_context_tokens_capped_by_max_n_ctx():
+    profile = {"llamacpp_defaults": {"n_ctx": 2048}, "llamacpp": {"max_n_ctx": 8192}}
+    assert llamacpp_engine.n_ctx_for({"context_tokens": 32768}, profile) == 8192
+    assert llamacpp_engine.n_ctx_for({"context_tokens": 4096}, profile) == 4096
+    assert llamacpp_engine.n_ctx_for({}, profile) == 2048  # falls back to the default
+    assert llamacpp_engine.n_ctx_for({"context_tokens": 32768}, {}) == 32768  # no cap
+    assert llamacpp_engine.n_ctx_for({}, {}) is None
+
+
+def test_shipped_configs_serve_models_and_judges_at_the_capped_context():
+    from harness.model_loader import ModelLoader
+    from judges.factory import build_judges
+
+    model = ModelLoader("config/models.yaml", hardware_profile="config/hardware_profile.yaml").load(
+        "llama-3.1-8b"
+    )
+    assert model.engine_kwargs["n_ctx"] == 8192
+    judges = build_judges(
+        "config/judges.yaml", judge_ids=["mistral-7b-local"],
+        hardware_profile="config/hardware_profile.yaml",
+    )
+    assert judges[0].engine_kwargs["n_ctx"] == 8192
+
+
+def test_model_reports_finish_reasons_per_turn(fake_llama_cpp):
+    model = LlamaCppModel(id="m", repo_id="it/repo", filename="m.gguf")
+    model.generate("hello")
+    assert model.last_finish_reasons == ["stop"]
+
+    _FakeLlama.finish_reason = "length"
+    try:
+        model.generate_conversation(["q1", "q2"])
+        assert model.last_finish_reasons == ["length", "length"]
+    finally:
+        _FakeLlama.finish_reason = "stop"

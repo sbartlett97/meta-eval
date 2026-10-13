@@ -66,6 +66,7 @@ judges:
     model: "bartowski/Mistral-7B-Instruct-v0.3-GGUF"
     access: "llamacpp"
     gguf_file: "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf"
+    context_tokens: 32768   # model maximum; served at min(this, llamacpp.max_n_ctx)
     cost_per_1k_tokens: 0.0
     priority: 2
     enabled: true
@@ -75,6 +76,7 @@ judges:
     model: "bartowski/Llama-3.2-3B-Instruct-GGUF"
     access: "llamacpp"
     gguf_file: "Llama-3.2-3B-Instruct-Q4_K_M.gguf"
+    context_tokens: 131072   # model maximum; served at min(this, llamacpp.max_n_ctx)
     cost_per_1k_tokens: 0.0
     priority: 2
     enabled: true

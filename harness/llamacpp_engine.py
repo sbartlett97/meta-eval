@@ -87,6 +87,23 @@ def engine_kwargs_from_profile(
     return kwargs
 
 
+def n_ctx_for(entry: Dict, profile: Optional[Dict]) -> Optional[int]:
+    """The context window to serve one model or judge entry with.
+
+    Uses the entry's ``context_tokens`` (falling back to
+    ``llamacpp_defaults.n_ctx``), capped by ``llamacpp.max_n_ctx`` so a 128K
+    model does not allocate a KV cache that cannot fit in memory. A single
+    profile-wide ``n_ctx`` silently cut multi-turn replies short and made local
+    judges fail on long transcripts (validation gap C6).
+    """
+    profile = profile if isinstance(profile, dict) else {}
+    wanted = entry.get("context_tokens") or (profile.get("llamacpp_defaults") or {}).get("n_ctx")
+    cap = (profile.get("llamacpp") or {}).get("max_n_ctx")
+    if wanted is None:
+        return None
+    return min(int(wanted), int(cap)) if cap else int(wanted)
+
+
 def max_resident_from_profile(profile: Optional[Dict]) -> int:
     """Read the resident-model cap from a hardware profile (default ``1``)."""
     if isinstance(profile, dict):
@@ -269,6 +286,10 @@ class LlamaCppEngine:
     engine_kwargs: Dict = field(default_factory=dict)
     key: str = ""
     _llm: object = field(default=None, init=False, repr=False)
+    #: llama.cpp ``finish_reason`` of each generation in the most recent call
+    #: (one per turn): ``"stop"`` for a natural end, ``"length"`` when the
+    #: reply hit ``max_tokens`` or the context window, i.e. was cut short.
+    last_finish_reasons: List[Optional[str]] = field(default_factory=list, init=False, repr=False)
 
     @property
     def loaded(self) -> bool:
@@ -343,6 +364,7 @@ class LlamaCppEngine:
             max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
             temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
         )
+        self.last_finish_reasons = [_finish_reason(result)]
         return result["choices"][0]["text"]
 
     def generate_turns(
@@ -357,6 +379,7 @@ class LlamaCppEngine:
             _ENGINE_CACHE.move_to_end(self.key)
         transcript = f"{system_prompt}\n\n" if system_prompt else ""
         replies: List[str] = []
+        self.last_finish_reasons = []
         for turn in turns:
             transcript += turn
             result = self._llm.create_completion(
@@ -365,6 +388,7 @@ class LlamaCppEngine:
                 temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
             )
             reply = result["choices"][0]["text"]
+            self.last_finish_reasons.append(_finish_reason(result))
             transcript += reply
             replies.append(reply)
         return replies
@@ -399,6 +423,7 @@ class LlamaCppEngine:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
         result = self._llm.create_chat_completion(messages=messages, **call_kwargs)
+        self.last_finish_reasons = [_finish_reason(result)]
         return result["choices"][0]["message"]["content"]
 
     def chat_turns(
@@ -425,6 +450,7 @@ class LlamaCppEngine:
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         replies: List[str] = []
+        self.last_finish_reasons = []
         for turn in turns:
             messages.append({"role": "user", "content": turn})
             # Pass a snapshot: callers/backends may retain the ``messages`` kwarg
@@ -433,6 +459,13 @@ class LlamaCppEngine:
                 messages=list(messages), **call_kwargs
             )
             reply = result["choices"][0]["message"]["content"]
+            self.last_finish_reasons.append(_finish_reason(result))
             messages.append({"role": "assistant", "content": reply})
             replies.append(reply)
         return replies
+
+
+def _finish_reason(result: Dict) -> Optional[str]:
+    """llama.cpp's ``finish_reason`` for a completion result (None if absent)."""
+    choices = result.get("choices") or [{}]
+    return choices[0].get("finish_reason")

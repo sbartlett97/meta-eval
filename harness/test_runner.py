@@ -186,6 +186,7 @@ class TestRunner:
     ) -> dict:
         start = time.monotonic()
         transcript = None
+        finish_reasons = None
         try:
             if test.is_multi_turn:
                 # Real conversation: turn n sees the model's own reply to turn
@@ -200,6 +201,9 @@ class TestRunner:
                     test.prompt, system_prompt=test.system_prompt, **gen_kwargs
                 )
             error = None
+            # Backends that report it (llama.cpp, Ollama) give one finish
+            # reason per turn; "length" means the reply was cut short.
+            finish_reasons = list(getattr(model, "last_finish_reasons", None) or []) or None
         except Exception as exc:  # noqa: BLE001 -- one bad test shouldn't abort the run
             logger.warning("Generation failed (%s / %s): %s", model_id, test.id, exc)
             output, error = "", str(exc)
@@ -232,6 +236,12 @@ class TestRunner:
             # single-turn) -- judges score this, not just the final reply, so
             # consistency-across-turns criteria are actually checkable.
             "transcript": transcript,
+            "finish_reasons": finish_reasons,
+            # True if any turn hit max_tokens or the context window. None when
+            # the backend does not report finish reasons.
+            "truncated": (
+                any(r == "length" for r in finish_reasons) if finish_reasons else None
+            ),
             "error": error,
             "latency_s": round(latency_s, 3),
         }

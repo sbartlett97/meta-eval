@@ -40,3 +40,30 @@ def test_top_level_mode_key_is_rejected():
     ]}
     with pytest.raises(ValueError, match="serving.mode"):
         ModelLoader(cfg, hardware_profile={}).load("m")
+
+
+def test_ollama_model_records_done_reason(monkeypatch):
+    # Network-free: requests.post is replaced with a canned Ollama response.
+    from harness import model_loader
+
+    class _Resp:
+        def __init__(self, body):
+            self._body = body
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._body
+
+    bodies = iter([
+        {"response": "hi", "done_reason": "stop"},
+        {"message": {"content": "a"}, "done_reason": "stop"},
+        {"message": {"content": "b"}, "done_reason": "length"},
+    ])
+    monkeypatch.setattr(model_loader.requests, "post", lambda *a, **k: _Resp(next(bodies)))
+
+    model = model_loader.OllamaModel(id="m", tag="m")
+    assert model.generate("q") == "hi" and model.last_finish_reasons == ["stop"]
+    assert model.generate_conversation(["q1", "q2"]) == ["a", "b"]
+    assert model.last_finish_reasons == ["stop", "length"]

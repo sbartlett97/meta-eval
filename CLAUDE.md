@@ -145,6 +145,13 @@ docs/critical-assessment.md  # the audit this round of fixes addresses
   kwargs come from `hardware_profile.yaml → llamacpp_defaults` via
   `llamacpp_engine.engine_kwargs_from_profile` (which filters to valid constructor
   keys); the resident-model cap comes from `llamacpp.max_resident`.
+  Each model and local judge is served at `min(context_tokens,
+  llamacpp.max_n_ctx)` (`llamacpp_engine.n_ctx_for`); `llamacpp_defaults.n_ctx`
+  is only the fallback for entries without `context_tokens`.
+- **Truncation is recorded, not guessed.** llama.cpp (`finish_reason`) and
+  Ollama (`done_reason`) report why each turn ended. Models expose this as
+  `last_finish_reasons`, and `TestRunner` writes `finish_reasons` and
+  `truncated` (any turn ended with `"length"`) on every output row.
 - **Judge panel evaluates judge-outer, not row-outer.** `JudgePanel.evaluate_batch`
   runs one judge over the *whole* batch of outputs before moving to the next
   judge, so each local llama.cpp judge loads once per run instead of once per

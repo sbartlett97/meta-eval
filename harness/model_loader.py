@@ -66,6 +66,9 @@ class OllamaModel:
     tag: str
     host: str = "http://localhost:11434"
     timeout_s: int = _DEFAULT_TIMEOUT_S
+    #: Ollama ``done_reason`` per turn of the most recent call ("stop" /
+    #: "length"); read by TestRunner to flag truncated replies.
+    last_finish_reasons: List[Optional[str]] = field(default_factory=list, repr=False)
 
     def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str:
         payload = {
@@ -83,7 +86,9 @@ class OllamaModel:
             f"{self.host}/api/generate", json=payload, timeout=self.timeout_s
         )
         resp.raise_for_status()
-        return resp.json().get("response", "")
+        body = resp.json()
+        self.last_finish_reasons = [body.get("done_reason")]
+        return body.get("response", "")
 
     def generate_conversation(
         self, turns: List[str], system_prompt: Optional[str] = None, **kwargs
@@ -97,6 +102,7 @@ class OllamaModel:
             "temperature": kwargs.get("temperature", _DEFAULT_TEMPERATURE),
         }
         replies: List[str] = []
+        finish_reasons: List[Optional[str]] = []
         for turn in turns:
             messages.append({"role": "user", "content": turn})
             resp = requests.post(
@@ -110,9 +116,12 @@ class OllamaModel:
                 timeout=self.timeout_s,
             )
             resp.raise_for_status()
-            reply = resp.json().get("message", {}).get("content", "")
+            body = resp.json()
+            reply = body.get("message", {}).get("content", "")
+            finish_reasons.append(body.get("done_reason"))
             messages.append({"role": "assistant", "content": reply})
             replies.append(reply)
+        self.last_finish_reasons = finish_reasons
         return replies
 
 
@@ -140,6 +149,9 @@ class LlamaCppModel:
     additional_files: List[str] = field(default_factory=list)
     engine_kwargs: Dict = field(default_factory=dict)
     mode: str = "chat"
+    #: llama.cpp ``finish_reason`` per turn of the most recent call ("stop" /
+    #: "length"); read by TestRunner to flag truncated replies.
+    last_finish_reasons: List[Optional[str]] = field(default_factory=list, repr=False)
 
     def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str:
         engine = llamacpp_engine.get_engine(
@@ -149,12 +161,14 @@ class LlamaCppModel:
             engine_kwargs=self.engine_kwargs,
         )
         call = engine.generate if self.mode == "completion" else engine.chat
-        return call(
+        text = call(
             prompt,
             system_prompt=system_prompt,
             max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
             temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
         )
+        self.last_finish_reasons = list(engine.last_finish_reasons)
+        return text
 
     def generate_conversation(
         self, turns: List[str], system_prompt: Optional[str] = None, **kwargs
@@ -166,12 +180,14 @@ class LlamaCppModel:
             engine_kwargs=self.engine_kwargs,
         )
         call = engine.generate_turns if self.mode == "completion" else engine.chat_turns
-        return call(
+        replies = call(
             turns,
             system_prompt=system_prompt,
             max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
             temperature=kwargs.get("temperature", _DEFAULT_TEMPERATURE),
         )
+        self.last_finish_reasons = list(engine.last_finish_reasons)
+        return replies
 
 
 @dataclass
@@ -228,6 +244,7 @@ class ModelLoader:
         self.prefer_engine = prefer_engine
         self.ensure_daemon = ensure_daemon
         profile = _as_dict(hardware_profile)
+        self._profile = profile
         self._llamacpp_kwargs = llamacpp_engine.engine_kwargs_from_profile(profile)
         # Apply the resident-model cap so llama.cpp loads sequentially.
         llamacpp_engine.set_max_resident(
@@ -284,7 +301,9 @@ class ModelLoader:
                 repo_id=entry["checkpoint"],
                 filename=serving.get("gguf_file"),
                 additional_files=list(serving.get("additional_files") or []),
-                engine_kwargs=dict(self._llamacpp_kwargs),
+                engine_kwargs=llamacpp_engine.engine_kwargs_from_profile(
+                    self._profile, n_ctx=llamacpp_engine.n_ctx_for(entry, self._profile)
+                ),
                 mode=mode,
             )
 

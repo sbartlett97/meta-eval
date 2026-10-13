@@ -257,3 +257,23 @@ def test_rows_record_what_the_model_was_asked(tmp_path):
     assert rows[0]["turns"] == ["p1"]
     assert rows[0]["system_prompt"] == "Be terse."
     assert rows[1]["turns"] == ["p2"]
+
+
+def test_rows_flag_truncated_replies(tmp_path):
+    class _Reporting(_FakeModel):
+        def generate(self, prompt, **kwargs):
+            self.last_finish_reasons = ["length" if prompt == "p2" else "stop"]
+            return super().generate(prompt, **kwargs)
+
+    out = tmp_path / "outputs.json"
+    Runner(_write_suite(tmp_path), _FakeLoader(_Reporting()), results_path=str(out)).run_tests(["m"])
+    rows = _read_outputs(out)
+    assert rows[0]["finish_reasons"] == ["stop"] and rows[0]["truncated"] is False
+    assert rows[1]["finish_reasons"] == ["length"] and rows[1]["truncated"] is True
+
+
+def test_rows_leave_truncation_unknown_when_backend_does_not_report_it(tmp_path):
+    out = tmp_path / "outputs.json"
+    Runner(_write_suite(tmp_path), _FakeLoader(_FakeModel()), results_path=str(out)).run_tests(["m"])
+    row = _read_outputs(out)[0]
+    assert row["finish_reasons"] is None and row["truncated"] is None

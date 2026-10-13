@@ -130,11 +130,17 @@ def build_judges(
     profile = (
         hardware_profile if isinstance(hardware_profile, dict) else _maybe_load(hardware_profile)
     )
-    llamacpp_kwargs = llamacpp_engine.engine_kwargs_from_profile(profile)
     # Honour the sequential-loading cap for any local llama.cpp judges.
     llamacpp_engine.set_max_resident(llamacpp_engine.max_resident_from_profile(profile))
     return [
-        build_judge(entry, llamacpp_kwargs=llamacpp_kwargs)
+        build_judge(
+            entry,
+            # Per-judge context window: a judge reads the whole transcript, so
+            # it needs room for it (see llamacpp_engine.n_ctx_for).
+            llamacpp_kwargs=llamacpp_engine.engine_kwargs_from_profile(
+                profile, n_ctx=llamacpp_engine.n_ctx_for(entry, profile)
+            ),
+        )
         for entry in select_judge_entries(config, max_priority, only_enabled, judge_ids)
     ]
 
