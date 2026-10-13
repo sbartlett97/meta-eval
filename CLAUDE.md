@@ -205,6 +205,7 @@ pytest tests/test_prompts.py -k parse     # run a single test by name
 # Full run: hydrate → generate → judge (+ judge_meta_eval.json)
 python harness/evaluator.py --models gemma-4-12b --judges all
 python harness/evaluator.py --outputs results/model_outputs.json --judges cheap   # re-judge
+python harness/evaluator.py --outputs old.json --allow-legacy   # judge a pre-fix outputs file anyway (refused by default)
 python harness/evaluator.py --models gemma-4-12b --no-judge                    # generate only
 python harness/evaluator.py --models gemma-4-12b --judges cheap --no-hydrate   # skip HF download
 python harness/evaluator.py --models gemma-4-12b --n-samples 3                 # repeated sampling

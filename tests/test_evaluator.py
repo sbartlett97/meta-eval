@@ -12,11 +12,20 @@ _HEURISTIC_ONLY = {
 }
 
 
+def _current(rows):
+    """An outputs payload in the current schema (what TestRunner writes):
+    provenance plus sample_index and turns on every row."""
+    return {
+        "outputs": [{"sample_index": 0, "turns": ["p"], **row} for row in rows],
+        "provenance": {"suite_sha256": "test"},
+    }
+
+
 def _write_outputs_json(path):
-    path.write_text(json.dumps({"outputs": [
+    path.write_text(json.dumps(_current([
         {"test_id": "t1", "model": "m", "criteria": "c", "output": "I refuse.", "latency_s": 0.1},
         {"test_id": "t2", "model": "m", "criteria": "c", "output": "sure!", "latency_s": 0.2},
-    ]}))
+    ])))
 
 
 def test_run_evaluation_reads_and_writes_json(tmp_path):
@@ -191,6 +200,7 @@ def test_run_evaluation_carries_turns_and_system_prompt_to_judges(tmp_path, monk
     evaluator.run_evaluation(
         outputs_path=str(outputs), judges_config=_HEURISTIC_ONLY,
         verdicts_path=str(tmp_path / "v.json"), hardware_profile={}, meta_eval_path=None,
+        allow_legacy=True,  # t2 is a legacy row on purpose
     )
     assert seen[0].turns == ("hello",) and seen[0].system_prompt == "sys"
     assert seen[1].turns == () and seen[1].system_prompt is None
@@ -201,12 +211,12 @@ def test_failed_generations_are_not_judged(tmp_path):
     outputs = tmp_path / "model_outputs.json"
     verdicts = tmp_path / "model_verdicts.json"
     meta_eval = tmp_path / "meta.json"
-    outputs.write_text(json.dumps({"outputs": [
+    outputs.write_text(json.dumps(_current([
         {"test_id": "t1", "model": "m", "criteria": "expect:FAIL refuse", "output": "I refuse."},
         {"test_id": "t2", "model": "m", "criteria": "expect:FAIL refuse", "output": "",
          "error": "ValueError: context window exceeded"},
         {"test_id": "t3", "model": "m", "criteria": "expect:FAIL refuse", "output": "sure!"},
-    ]}))
+    ])))
 
     run_evaluation(
         outputs_path=str(outputs), judges_config=_HEURISTIC_ONLY,
@@ -225,10 +235,10 @@ def test_failed_generations_are_not_judged(tmp_path):
 def test_cut_off_reasoning_with_no_answer_is_not_judged(tmp_path):
     outputs = tmp_path / "model_outputs.json"
     verdicts = tmp_path / "model_verdicts.json"
-    outputs.write_text(json.dumps({"outputs": [
+    outputs.write_text(json.dumps(_current([
         {"test_id": "t1", "model": "m", "criteria": "c", "output": "",
          "reasoning": ["still thinking"], "reasoning_complete": False},
-    ]}))
+    ])))
     run_evaluation(
         outputs_path=str(outputs), judges_config=_HEURISTIC_ONLY,
         verdicts_path=str(verdicts), hardware_profile={}, meta_eval_path=None,
@@ -236,3 +246,58 @@ def test_cut_off_reasoning_with_no_answer_is_not_judged(tmp_path):
     row = json.loads(verdicts.read_text())["verdicts"][0]
     assert "reasoning trace was cut off" in row["generation_error"]
     assert row["verdicts"] == [] and row["consensus"] is None
+
+
+
+# ---------------------------------------------------------------------- #
+# Outputs from before the fixes are refused (validation gap C8)
+# ---------------------------------------------------------------------- #
+def _write_legacy(path):
+    # The shape of results/model_outputs.json from the 2026-08 run.
+    path.write_text(json.dumps({"outputs": [
+        {"test_id": "t1", "model": "m", "category": "c", "criteria": "c",
+         "output": "o", "error": None, "latency_s": 1.0},
+    ]}))
+
+
+def test_run_evaluation_refuses_legacy_outputs(tmp_path):
+    import pytest
+
+    from harness.evaluator import LegacyOutputsError
+
+    outputs = tmp_path / "model_outputs.json"
+    verdicts = tmp_path / "v.json"
+    _write_legacy(outputs)
+    with pytest.raises(LegacyOutputsError, match="no provenance block.*sample_index"):
+        run_evaluation(
+            outputs_path=str(outputs), judges_config=_HEURISTIC_ONLY,
+            verdicts_path=str(verdicts), hardware_profile={}, meta_eval_path=None,
+        )
+    assert not verdicts.exists()
+
+
+def test_allow_legacy_judges_old_outputs_anyway(tmp_path):
+    outputs = tmp_path / "model_outputs.json"
+    verdicts = tmp_path / "v.json"
+    _write_legacy(outputs)
+    run_evaluation(
+        outputs_path=str(outputs), judges_config=_HEURISTIC_ONLY,
+        verdicts_path=str(verdicts), hardware_profile={}, meta_eval_path=None,
+        allow_legacy=True,
+    )
+    assert len(json.loads(verdicts.read_text())["verdicts"]) == 1
+
+
+def test_cli_exits_nonzero_on_legacy_outputs(tmp_path, monkeypatch):
+    from harness import evaluator
+
+    monkeypatch.setattr(evaluator, "load_env", lambda: False)
+    judges_cfg = tmp_path / "judges.yaml"
+    import yaml
+    judges_cfg.write_text(yaml.safe_dump(_HEURISTIC_ONLY))
+    outputs = tmp_path / "model_outputs.json"
+    _write_legacy(outputs)
+    argv = ["--outputs", str(outputs), "--judges-config", str(judges_cfg),
+            "--verdicts", str(tmp_path / "v.json"), "--meta-eval", "", "--no-hydrate"]
+    assert evaluator._cli(argv) == 2
+    assert evaluator._cli(argv + ["--allow-legacy"]) == 0

@@ -87,11 +87,14 @@ def run_evaluation(
     meta_eval_path: Optional[str] = "results/judge_meta_eval.json",
     reference_judge_id: str = "heuristic-baseline",
     judge_ids: Optional[List[str]] = None,
+    allow_legacy: bool = False,
 ) -> str:
     """Judge previously-generated model outputs; write verdicts. Returns the path.
 
     ``judge_ids`` selects exactly those judges and overrides ``max_priority``
-    (see ``judges.factory.select_judge_entries``).
+    (see ``judges.factory.select_judge_entries``). An outputs file that
+    predates the current schema raises :class:`LegacyOutputsError` unless
+    ``allow_legacy`` is True.
     """
     judges = build_judges(
         judges_config, max_priority=max_priority, hardware_profile=hardware_profile,
@@ -106,7 +109,9 @@ def run_evaluation(
     # Read all outputs, then judge the batch judge-outer (each judge processes
     # every row before the next judge runs). This keeps a sequentially-loaded
     # local judge resident for all its calls instead of reloading per row.
-    rows = _load_output_rows(outputs_path)
+    rows, outputs_provenance = _read_outputs(outputs_path)
+    if not allow_legacy:
+        _check_current_schema(outputs_path, rows, outputs_provenance)
     # A failed generation, or a reasoning trace cut off before any answer,
     # has no response to grade. Judging its empty output would record the
     # failure as model behaviour (validation gaps C3, C7), so these rows skip
@@ -204,20 +209,52 @@ def _judgement(row: Dict, results) -> Dict:
     }
 
 
+class LegacyOutputsError(ValueError):
+    """The outputs file predates the current schema and should be regenerated."""
+
+
+#: Row fields every current outputs file has. Older files lack them, and also
+#: lack the fixes they stand for: system prompts were dropped, multi-turn cases
+#: were collapsed, and judges could not see the request (validation gap C8).
+_REQUIRED_ROW_KEYS = ("sample_index", "turns")
+
+
+def _read_outputs(outputs_path: str):
+    """``(rows, provenance)`` from an outputs file. ``provenance`` is None for
+    a bare array or a legacy ``.jsonl`` file."""
+    if outputs_path.endswith(".jsonl"):
+        with open(outputs_path, "r", encoding="utf-8") as src:
+            return [json.loads(line) for line in src if line.strip()], None
+    with open(outputs_path, "r", encoding="utf-8") as src:
+        data = json.load(src)
+    if isinstance(data, dict):
+        return data.get("outputs", []), data.get("provenance")
+    return data, None
+
+
 def _load_output_rows(outputs_path: str) -> List[Dict]:
     """Load model-output rows from a ``{"outputs": [...]}`` JSON file.
 
     A bare top-level array is accepted too, and legacy ``.jsonl`` outputs (one
     object per line) still load, dispatched on the file extension.
     """
-    if outputs_path.endswith(".jsonl"):
-        with open(outputs_path, "r", encoding="utf-8") as src:
-            return [json.loads(line) for line in src if line.strip()]
-    with open(outputs_path, "r", encoding="utf-8") as src:
-        data = json.load(src)
-    if isinstance(data, dict):
-        return data.get("outputs", [])
-    return data
+    return _read_outputs(outputs_path)[0]
+
+
+def _check_current_schema(outputs_path: str, rows: List[Dict], provenance) -> None:
+    """Raise :class:`LegacyOutputsError` unless the file has provenance and
+    every row has the current required fields."""
+    problems = []
+    if not provenance:
+        problems.append("no provenance block")
+    missing = sorted({k for row in rows for k in _REQUIRED_ROW_KEYS if k not in row})
+    if missing:
+        problems.append(f"rows without {missing}")
+    if problems:
+        raise LegacyOutputsError(
+            f"{outputs_path} predates the current output schema ({'; '.join(problems)}). "
+            "Regenerate it with --models, or pass --allow-legacy to judge it anyway."
+        )
 
 
 def _cli(argv: Optional[List[str]] = None) -> int:
@@ -243,6 +280,13 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         default="results/judge_meta_eval.json",
         help="Where to write the inter-judge agreement/bias report. Pass an "
         "empty string to skip it.",
+    )
+    parser.add_argument(
+        "--allow-legacy",
+        action="store_true",
+        help="Judge an outputs file that predates the current schema (no "
+        "provenance / sample_index / turns). Its numbers are not comparable "
+        "with a current run.",
     )
     parser.add_argument(
         "--reference-judge",
@@ -358,16 +402,21 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         logger.info("Generation-only run (--no-judge); outputs at %s", args.outputs)
         return 0
 
-    run_evaluation(
-        outputs_path=args.outputs,
-        judges_config=args.judges_config,
-        verdicts_path=args.verdicts,
-        max_priority=_JUDGE_PRESETS[args.judges],
-        hardware_profile=args.hardware_config,
-        meta_eval_path=args.meta_eval or None,
-        reference_judge_id=args.reference_judge,
-        judge_ids=args.judge_ids,
-    )
+    try:
+        run_evaluation(
+            outputs_path=args.outputs,
+            judges_config=args.judges_config,
+            verdicts_path=args.verdicts,
+            max_priority=_JUDGE_PRESETS[args.judges],
+            hardware_profile=args.hardware_config,
+            meta_eval_path=args.meta_eval or None,
+            reference_judge_id=args.reference_judge,
+            judge_ids=args.judge_ids,
+            allow_legacy=args.allow_legacy,
+        )
+    except LegacyOutputsError as exc:
+        logger.error("%s", exc)
+        return 2
     return 0
 
 
