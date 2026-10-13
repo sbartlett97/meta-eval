@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from judges.base import Judge, Verdict
+from judges.heuristic_judge import exact_check_applies
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,8 @@ class JudgePanel:
         if not judges:
             raise ValueError("JudgePanel requires at least one judge")
         self.judges = list(judges)
+        # Only skip exactly-checkable items when a judge here will decide them.
+        self._has_exact_judge = any(j.runs_exact_checks for j in self.judges)
 
     def evaluate(
         self,
@@ -69,11 +72,8 @@ class JudgePanel:
         metadata: Dict[str, Any] | None = None,
     ) -> PanelResult:
         """Run every judge on one output. Judge errors are captured, not raised."""
-        verdicts = [
-            judge.evaluate(test_id, model_output, criteria, category, metadata or {})
-            for judge in self.judges
-        ]
-        return PanelResult(test_id=test_id, verdicts=verdicts)
+        item = EvalItem(test_id, model_output, criteria, category, metadata or {})
+        return PanelResult(test_id=test_id, verdicts=[self._judge(j, item) for j in self.judges])
 
     def evaluate_batch(self, items: Sequence[EvalItem]) -> List[PanelResult]:
         """Evaluate many outputs **judge-outer, item-inner**.
@@ -89,16 +89,33 @@ class JudgePanel:
         results = [PanelResult(test_id=item.test_id) for item in items]
         for judge in self.judges:
             for item, result in zip(items, results):
-                result.verdicts.append(
-                    judge.evaluate(
-                        item.test_id,
-                        item.model_output,
-                        item.criteria,
-                        item.category,
-                        item.metadata,
-                    )
-                )
+                result.verdicts.append(self._judge(judge, item))
         return results
+
+    def _judge(self, judge: Judge, item: EvalItem) -> Verdict:
+        """One judge's verdict on one item.
+
+        An item with an exact deterministic check (a format check) is decided
+        by the judge that runs it. The other judges skip it without a call and
+        record an abstained verdict, so they neither outvote the exact check
+        nor spend tokens on it (validation gap C12).
+        """
+        if (
+            self._has_exact_judge
+            and not judge.runs_exact_checks
+            and exact_check_applies(item.category, item.criteria, item.metadata)
+        ):
+            return Verdict(
+                verdict="AMBIGUOUS",
+                confidence=0.0,
+                judge_id=judge.id,
+                test_id=item.test_id,
+                rationale="Skipped: an exact deterministic check decides this item.",
+                abstained=True,
+            )
+        return judge.evaluate(
+            item.test_id, item.model_output, item.criteria, item.category, item.metadata
+        )
 
     def cost_summary(self) -> Dict[str, dict]:
         """Aggregate per-judge latency/token stats from call logs."""

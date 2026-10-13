@@ -106,6 +106,9 @@ class Judge(ABC):
     #: ``has_credentials`` up front so a missing key stops the run instead of
     #: silently turning every verdict from this judge into an error.
     credential_env: Optional[str] = None
+    #: True for a judge that decides exactly-checkable items (format checks)
+    #: by code. When one is in the panel, the other judges skip those items.
+    runs_exact_checks: bool = False
 
     def __init__(self) -> None:
         self.call_log: List[JudgeCallRecord] = []

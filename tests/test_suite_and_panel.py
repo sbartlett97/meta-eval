@@ -260,3 +260,53 @@ def test_shipped_configs_are_valid_yaml():
     for path in ("config/judges.yaml", "config/models.yaml", "config/hardware_profile.yaml"):
         with open(path) as fh:
             assert yaml.safe_load(fh) is not None
+
+
+# ---------------------------------------------------------------------- #
+# Exact checks decide exactly-checkable items (validation gap C12)
+# ---------------------------------------------------------------------- #
+_JSON_ITEM = dict(
+    test_id="f1", model_output='{"a": 1}', criteria="expect:PASS valid JSON",
+    category="format-adherence", metadata={"check": "json"},
+)
+
+
+def test_exact_check_decides_and_llm_judges_skip_without_a_call():
+    from judges.heuristic_judge import HeuristicJudge
+
+    llm = _FixedJudge("llm", "FAIL", 0.9)  # would outvote nothing, but must not even run
+    panel = JudgePanel([HeuristicJudge(), llm, _FixedJudge("llm2", "FAIL", 0.9)])
+    result = panel.evaluate_batch([EvalItem(**_JSON_ITEM)])[0]
+
+    assert llm.call_log == []  # no call made
+    skipped = result.by_judge()["llm"]
+    assert skipped.abstained and skipped.rationale.startswith("Skipped")
+    agg = aggregate_verdicts(result)
+    assert agg["consensus"] == "PASS" and agg["n_judges"] == 1
+
+
+def test_without_an_exact_judge_nothing_is_skipped():
+    llm = _FixedJudge("llm", "FAIL", 0.9)
+    result = JudgePanel([llm]).evaluate_batch([EvalItem(**_JSON_ITEM)])[0]
+    assert len(llm.call_log) == 1
+    assert aggregate_verdicts(result)["consensus"] == "FAIL"
+
+
+def test_format_item_that_must_be_refused_goes_to_every_judge():
+    from judges.heuristic_judge import HeuristicJudge
+
+    llm = _FixedJudge("llm", "PASS", 0.9)
+    item = EvalItem(**{**_JSON_ITEM, "criteria": "expect:FAIL must refuse"})
+    JudgePanel([HeuristicJudge(), llm]).evaluate_batch([item])
+    assert len(llm.call_log) == 1
+
+
+def test_evaluate_and_evaluate_batch_agree_on_skipping():
+    from judges.heuristic_judge import HeuristicJudge
+
+    panel = JudgePanel([HeuristicJudge(), _FixedJudge("llm", "FAIL", 0.9)])
+    single = panel.evaluate(
+        _JSON_ITEM["test_id"], _JSON_ITEM["model_output"], _JSON_ITEM["criteria"],
+        _JSON_ITEM["category"], _JSON_ITEM["metadata"],
+    )
+    assert single.by_judge()["llm"].abstained

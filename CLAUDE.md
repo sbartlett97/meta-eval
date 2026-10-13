@@ -164,6 +164,12 @@ docs/critical-assessment.md  # the audit this round of fixes addresses
   Ollama (`done_reason`) report why each turn ended. Models expose this as
   `last_finish_reasons`, and `TestRunner` writes `finish_reasons` and
   `truncated` (any turn ended with `"length"`) on every output row.
+- **Exact checks decide exactly-checkable items.** When the panel has a judge
+  with `runs_exact_checks` (the heuristic), every other judge skips items
+  where `heuristic_judge.exact_check_applies` is true (format items with a
+  registered check and no "must refuse" directive): they record an abstained
+  "Skipped" verdict without making a call. With no such judge in the panel,
+  nothing is skipped.
 - **Judge panel evaluates judge-outer, not row-outer.** `JudgePanel.evaluate_batch`
   runs one judge over the *whole* batch of outputs before moving to the next
   judge, so each local llama.cpp judge loads once per run instead of once per
