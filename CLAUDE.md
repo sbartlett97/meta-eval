@@ -53,6 +53,7 @@ harness/
   test_runner.py       # run a suite against models, persist raw outputs (+ --n-samples, provenance)
   test_suite.py        # JSON suite schema + loader (cases under `evals`; turns/system_prompt/domain/...)
   provenance.py         # git commit + suite hash + timestamp stamped into results/*.json
+  gold.py              # task 2.12: gold sample, local labelling page (gold_ui.html), labels-vs-judges compare
 judges/
   base.py              # Judge ABC + Verdict types (the shared contract); retry/backoff, NonRetryableJudgeError
   items.py             # EvalItem (the unit a judge grades) + item types
@@ -61,6 +62,8 @@ judges/
   claude_judge.py      # Anthropic API judge
   gpt4_judge.py        # OpenAI API judge
   local_llamacpp_judge.py # local in-process llama.cpp (GGUF) judge
+  classifier_judges.py # HarmBench / WildGuard reference classifiers (own prompts, raw completion)
+  declines.py          # decline memory: never re-send a judge content it declined
   heuristic_judge.py   # deterministic judge: refusal directive + real format-adherence checks
   format_checks.py     # deterministic JSON/CSV/sentence-count/markdown/python/sections checks
   factory.py           # build judges from config/judges.yaml
@@ -118,7 +121,10 @@ docs/critical-assessment.md  # the audit this round of fixes addresses
   fallbacks off (D4): a decline is `abstained` with
   `abstain_reason="judge_declined:<category>"`. The OpenAI judge is pinned to
   `gpt-4o-2024-11-20`. Verdict provenance records `rubric_version` and
-  `rubric_sha256`. `judges/heuristic_judge.py` reads the raw criteria for its
+  `rubric_sha256`. Rubric 2.1.0 is **frozen** (task 2.12):
+  `tests/test_rubric.py::test_rubric_is_frozen` pins its version and hash.
+  Any rubric edit needs a version bump and a new gold check
+  (`harness/gold.py`). `judges/heuristic_judge.py` reads the raw criteria for its
   own deterministic dispatch.
 - **Loading is lazy and import-light.** Constructing a `LlamaCppModel`, a judge,
   or a `LlamaCppEngine` must NOT import `llama_cpp` or load weights — that only
@@ -177,6 +183,27 @@ docs/critical-assessment.md  # the audit this round of fixes addresses
   Ollama (`done_reason`) report why each turn ended. Models expose this as
   `last_finish_reasons`, and `TestRunner` writes `finish_reasons` and
   `truncated` (any turn ended with `"length"`) on every output row.
+- **Each judge has a content policy (`skip:` in judges.yaml).** A judge is
+  never sent harmful items of the listed `severity_tiers` or `domains`; a
+  harmful item with no tier counts as tier 3. The skipped item gets an
+  abstained verdict with `abstain_reason="skipped_by_policy:<why>"` and no
+  call is made (`Judge.policy_skip_reason`, `JudgePanel._skip_verdict`). This
+  protects the cloud API accounts: Claude skips tier 3, `cybersecurity` and
+  `biology` (it declined all of them in the 2.12 gold check); the OpenAI
+  judges skip tier 3. Local judges skip nothing, so the reference classifiers
+  (`judges/classifier_judges.py`: HarmBench, WildGuard) grade those items.
+  `skipped_by_policy` is not `judge_declined`: only a real decline counts in
+  the decline rate. Do not send skipped content to a cloud judge in an ad-hoc
+  test either.
+- **Decline memory (`judges/declines.py`).** Suite labels miss some harmful
+  content, so the policy above is not enough on its own. When a judge
+  declines an item, the evaluator records `(judge_id, sha256 of the request,
+  system prompt and response)` in `results/judge_declines.jsonl` (`--declines`;
+  hashes only, no content, local to this machine). Later runs skip that judge
+  on the same content (`skipped_by_policy:previously_declined`). Backfill
+  from old verdict files with `python judges/declines.py --outputs <outputs>
+  <verdicts...>`. `run_evaluation` has no default path (tests stay out of
+  `results/`); the CLI does.
 - **Exact checks decide exactly-checkable items.** When the panel has a judge
   with `runs_exact_checks` (the heuristic), every other judge skips items
   where `heuristic_judge.exact_check_applies` is true (format items with a
@@ -243,6 +270,12 @@ python harness/evaluator.py --models gemma-4-12b --n-samples 1 --seed 7        #
 python harness/evaluator.py --models gemma-4-12b --resume      # continue a crashed run from its checkpoint
 python harness/evaluator.py --models gemma-4-12b --overwrite   # replace an existing outputs file
 
+# Gold labels (2.12). Local only: results/gold/ holds raw completions and is gitignored.
+python harness/gold.py sample            # stratified 20-row sample -> results/gold/sample.json
+python harness/gold.py serve             # label at http://127.0.0.1:8765 (model hidden)
+python harness/evaluator.py --outputs results/gold/sample.json --verdicts results/gold/verdicts.json --meta-eval results/gold/meta_eval.json --judges cheap
+python harness/gold.py compare           # human labels vs judge verdicts -> results/gold/compare.json
+
 python harness/hydrate.py --dry-run       # list open weights that would be downloaded
 
 # Behavioral-invariance diff (needs both variant and base already judged)
@@ -262,9 +295,11 @@ which both the panel and hydration use.
   The CLIs load them from the gitignored `.env` (`harness/env.py`, python-dotenv;
   variables already set in the shell win). The evaluator exits with code 2
   before any generation or judging if an enabled judge has no key.
-- `HF_TOKEN` — for gated HF repos that hydration downloads. None of the
-  shipped `config/models.yaml` / `config/judges.yaml` checkpoints are gated
-  (verified live against the HuggingFace API) — only needed if you add one.
+- `HF_TOKEN` — for gated HF repos. Hydration downloads no gated repo. The one
+  gated checkpoint is WildGuard (`allenai/wildguard`): accept the AI2 terms on
+  HF, then run `scripts/convert_wildguard.sh`, which builds the local GGUF at
+  the judge's `model_path`. Without that file, a run that selects
+  `wildguard-7b` stops before any work.
 - Target hardware is a MacBook Pro M5 (32GB unified memory, Apple Metal). The
   scaffold's memory/latency assumptions are unverified on real hardware.
 

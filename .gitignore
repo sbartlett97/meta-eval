@@ -218,9 +218,7 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Generated run artifacts (keep the tracked .gitkeep)
-results/*.json
-results/*.jsonl
-results/*.tmp
+results/*
 !results/.gitkeep
 
 # Editor, OS and agent files

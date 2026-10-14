@@ -69,6 +69,8 @@ class EvalItem:
     severity_tier: Optional[int] = None
     #: The correct answer, for ``factual`` items.
     reference_answer: Optional[str] = None
+    #: Suite domain (e.g. "cybersecurity"); a judge's content policy can skip by it.
+    domain: str = ""
 
     def __post_init__(self) -> None:
         if not self.item_type:

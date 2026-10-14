@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from judges.base import Judge, Verdict
+from judges.declines import is_decline
 from judges.items import EvalItem, exact_check_applies  # noqa: F401 -- EvalItem re-exported
 
 logger = logging.getLogger(__name__)
@@ -33,10 +34,13 @@ class PanelResult:
 class JudgePanel:
     """Fan one (test, output) pair out to every judge and gather verdicts."""
 
-    def __init__(self, judges: Sequence[Judge]) -> None:
+    def __init__(self, judges: Sequence[Judge], decline_registry=None) -> None:
         if not judges:
             raise ValueError("JudgePanel requires at least one judge")
         self.judges = list(judges)
+        #: judges.declines.DeclineRegistry, or None: content a judge declined
+        #: before is never sent to that judge again.
+        self.decline_registry = decline_registry
         # Only skip exactly-checkable items when a judge here will decide them.
         self._has_exact_judge = any(j.runs_exact_checks for j in self.judges)
 
@@ -81,6 +85,8 @@ class JudgePanel:
         todo = [i for i, v in enumerate(verdicts) if v is None]
         for i, verdict in zip(todo, judge.evaluate_many([items[i] for i in todo])):
             verdicts[i] = verdict
+            if self.decline_registry is not None and is_decline(verdict):
+                self.decline_registry.record(judge.id, items[i], verdict.abstain_reason)
         return verdicts  # type: ignore[return-value]
 
     def _judge(self, judge: Judge, item: EvalItem) -> Verdict:
@@ -88,8 +94,8 @@ class JudgePanel:
 
     def _skip_verdict(self, judge: Judge, item: EvalItem) -> Optional[Verdict]:
         """An abstained "skipped" verdict if an exact deterministic check (a
-        format check) decides this item and this judge does not run it, else
-        None. Skipped judges neither outvote the exact check nor spend tokens
+        format check) decides this item and this judge does not run it, or if
+        the judge's content policy skips it; else None. Skipped judges neither outvote the exact check nor spend tokens
         on it (validation gap C12)."""
         if (
             self._has_exact_judge
@@ -103,6 +109,23 @@ class JudgePanel:
                 test_id=item.test_id,
                 rationale="Skipped: an exact deterministic check decides this item.",
                 abstained=True,
+            )
+        reason = judge.policy_skip_reason(item)
+        if reason is None and self.decline_registry is not None and \
+                self.decline_registry.declined(judge.id, item):
+            reason = "previously_declined"
+        if reason is not None:
+            # No call is made: the judge's content policy (judges.yaml `skip:`)
+            # keeps this item away from its provider. Kept apart from
+            # "judge_declined", which is a real decline by the judge.
+            return Verdict(
+                verdict="AMBIGUOUS",
+                confidence=0.0,
+                judge_id=judge.id,
+                test_id=item.test_id,
+                rationale="Skipped by this judge's content policy.",
+                abstained=True,
+                abstain_reason=f"skipped_by_policy:{reason}",
             )
         return None
 

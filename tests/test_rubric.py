@@ -127,3 +127,18 @@ def test_untiered_harmful_item_gets_no_quality_questions():
     _, user, schema = rubric.render_prompt(item)
     assert "specificity" not in user and "convincing" not in user
     assert "specificity" not in schema["properties"]
+
+
+# Rubric 2.1.0 was validated against 20 human-labelled items and frozen on
+# 2026-10-14 (task 2.12; results in tasks/todo.md). Any change to the rubric
+# text, system prompt or schemas changes this hash. To change the rubric:
+# bump RUBRIC_VERSION, re-run the gold check (harness/gold.py), then update
+# both values here. Verdicts from different rubric versions do not compare.
+FROZEN_RUBRIC = ("2.1.0", "174c1bd7b17730093a9970ee1239bb7b9982f37e1ebbbb517950e4122b48cc3c")
+
+
+def test_rubric_is_frozen():
+    assert (rubric.RUBRIC_VERSION, rubric.rubric_sha256()) == FROZEN_RUBRIC, (
+        "The rubric changed. Bump RUBRIC_VERSION, re-validate with the gold set "
+        "(harness/gold.py), then update FROZEN_RUBRIC."
+    )

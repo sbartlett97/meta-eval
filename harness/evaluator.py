@@ -46,6 +46,7 @@ from harness.env import load_env
 from harness.hydrate import hydrate_weights
 from harness.model_loader import ModelLoader
 from harness.test_runner import CheckpointMismatchError, TestRunner
+from judges.declines import DEFAULT_PATH as DEFAULT_DECLINES_PATH, DeclineRegistry
 from judges.factory import build_judges
 from judges import rubric
 from judges.judge_panel import EvalItem, JudgePanel, aggregate_verdicts
@@ -72,11 +73,12 @@ def require_credentials(judges) -> None:
     verdict on every row and the run still exits 0 -- the panel silently loses
     its model-independent anchor.
     """
-    missing = [f"{j.id} (needs {j.credential_env})" for j in judges if not j.has_credentials()]
+    missing = [f"{j.id} ({j.missing_requirement()})" for j in judges if j.missing_requirement()]
     if missing:
         raise MissingCredentialsError(
-            "Judge(s) without credentials: " + ", ".join(missing)
-            + ". Set the variable(s) in the environment or in .env, or disable those judges."
+            "Judge(s) not ready: " + ", ".join(missing)
+            + ". Set API keys in the environment or in .env, create the missing files, "
+            "or disable those judges."
         )
 
 
@@ -92,6 +94,7 @@ def run_evaluation(
     allow_legacy: bool = False,
     batch: bool = False,
     self_consistency: float = 0.0,
+    declines_path: Optional[str] = None,
 ) -> str:
     """Judge previously-generated model outputs; write verdicts. Returns the path.
 
@@ -100,6 +103,8 @@ def run_evaluation(
     predates the current schema raises :class:`LegacyOutputsError` unless
     ``allow_legacy`` is True. ``self_consistency`` (0-1) re-grades that share
     of rows with every non-deterministic judge (see :func:`_regrade_subset`).
+    ``declines_path`` is the decline memory (judges/declines.py): content a
+    judge declined before is skipped for it, and new declines are added.
     """
     judges = build_judges(
         judges_config, max_priority=max_priority, hardware_profile=hardware_profile,
@@ -112,7 +117,11 @@ def run_evaluation(
         for judge in judges:
             if judge.supports_batch:
                 judge.use_batch = True
-    panel = JudgePanel(judges)
+    registry = DeclineRegistry(declines_path) if declines_path else None
+    if registry is not None and len(registry):
+        logger.info("Decline memory: %d declined item(s) are never re-sent (%s)",
+                    len(registry), declines_path)
+    panel = JudgePanel(judges, decline_registry=registry)
     logger.info("Judge panel: %s", [j.id for j in judges])
 
     os.makedirs(os.path.dirname(verdicts_path) or ".", exist_ok=True)
@@ -148,9 +157,22 @@ def run_evaluation(
             item_type=row.get("item_type") or "",  # "" -> inferred (judges/items.py)
             severity_tier=row.get("severity_tier"),
             reference_answer=row.get("reference_answer"),
+            domain=row.get("domain", ""),
         )
         for row in judged_rows
     ]
+    model_judges = [j for j in judges if j.provider != "deterministic"]
+    ungraded = sum(
+        1 for item in items
+        if model_judges and item.item_type in ("harmful_request", "jailbreak")
+        and all(j.policy_skip_reason(item) for j in model_judges)
+    )
+    if ungraded:
+        logger.warning(
+            "%d harmful item(s) are skipped by the content policy of every model judge "
+            "(judges.yaml `skip:`); they get no verdict. Add a local judge to grade them.",
+            ungraded,
+        )
     untiered = sum(
         1 for item in items
         if item.item_type in ("harmful_request", "jailbreak") and item.severity_tier not in (1, 2, 3)
@@ -360,6 +382,12 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         "judge, to measure how often a judge agrees with itself.",
     )
     parser.add_argument(
+        "--declines",
+        default=DEFAULT_DECLINES_PATH,
+        help="Decline memory: a judge is never re-sent content it declined before "
+        "(judges/declines.py). Pass an empty string to switch it off.",
+    )
+    parser.add_argument(
         "--allow-legacy",
         action="store_true",
         help="Judge an outputs file that predates the current schema (no "
@@ -500,6 +528,7 @@ def _cli(argv: Optional[List[str]] = None) -> int:
             allow_legacy=args.allow_legacy,
             batch=args.batch,
             self_consistency=args.self_consistency,
+            declines_path=args.declines or None,
         )
     except LegacyOutputsError as exc:
         logger.error("%s", exc)

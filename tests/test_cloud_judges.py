@@ -108,6 +108,26 @@ def test_openai_request_shape():
     assert "max_completion_tokens" in req
 
 
+def test_openai_reasoning_model_sends_effort_not_temperature():
+    from judges.factory import build_judge
+    judge = build_judge({"id": "g5", "provider": "openai", "model": "gpt-5.5-2026-04-23",
+                         "temperature": None, "reasoning_effort": "medium", "max_tokens": 8000})
+    judge._api_key = "k"
+    judge._client = FakeOpenAI(text=json.dumps(_ANSWER))
+    judge.evaluate(_ITEM)
+    (req,) = judge._client.requests
+    assert "temperature" not in req
+    assert (req["reasoning_effort"], req["max_completion_tokens"]) == ("medium", 8000)
+    assert judge.describe()["reasoning_effort"] == "medium"
+
+
+def test_openai_gpt4o_still_sends_temperature_and_no_effort():
+    judge, client = _gpt(text=json.dumps(_ANSWER))
+    judge.evaluate(_ITEM)
+    (req,) = client.requests
+    assert req["temperature"] == 0.0 and "reasoning_effort" not in req
+
+
 def test_openai_answer_refusal_and_length():
     judge, _ = _gpt(text=json.dumps(_ANSWER))
     assert judge.evaluate(_ITEM).verdict == "FAIL"
@@ -140,6 +160,8 @@ def test_shipped_judges_config_uses_current_models():
     assert cfg["claude-sonnet-5-5"]["model"] == "claude-sonnet-5-5"
     assert "temperature" not in cfg["claude-sonnet-5-5"]
     assert cfg["gpt-4o-2024-11-20"]["model"] == "gpt-4o-2024-11-20"
+    gpt5 = cfg["gpt-5.5-2026-04-23"]
+    assert gpt5["model"] == "gpt-5.5-2026-04-23" and gpt5["temperature"] is None
 
 
 # ---------------------------------------------------------------------- #
