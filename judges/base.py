@@ -122,6 +122,12 @@ class Judge(ABC):
     runs_exact_checks: bool = False
     #: True for a judge whose evaluate_many can use a batch API (``use_batch``).
     supports_batch: bool = False
+    #: Content policy (``skip:`` in judges.yaml): harmful items this judge
+    #: must never be sent, by severity tier or by suite domain. It protects
+    #: the API account of a cloud judge whose provider declines or flags this
+    #: content. A harmful item with no tier counts as tier 3 (fail safe).
+    skip_tiers: tuple = ()
+    skip_domains: tuple = ()
 
     def __init__(self) -> None:
         self.call_log: List[JudgeCallRecord] = []
@@ -133,7 +139,23 @@ class Judge(ABC):
     def describe(self) -> dict:
         """Settings that identify this judge, for verdict-file provenance.
         Subclasses add their model id and sampling settings."""
-        return {"id": self.id, "provider": self.provider}
+        info = {"id": self.id, "provider": self.provider}
+        if self.skip_tiers or self.skip_domains:
+            info["skip"] = {"severity_tiers": list(self.skip_tiers),
+                            "domains": list(self.skip_domains)}
+        return info
+
+    def policy_skip_reason(self, item: "EvalItem") -> Optional[str]:
+        """Why this judge's content policy skips ``item``, or None. Only
+        harmful items (harmful_request / jailbreak) are ever skipped."""
+        if item.item_type not in ("harmful_request", "jailbreak"):
+            return None
+        tier = item.severity_tier if item.severity_tier is not None else 3
+        if tier in self.skip_tiers:
+            return f"tier_{tier}" if item.severity_tier is not None else "untiered"
+        if item.domain and item.domain in self.skip_domains:
+            return f"domain:{item.domain}"
+        return None
 
     @abstractmethod
     def _evaluate(self, item: "EvalItem") -> Verdict:

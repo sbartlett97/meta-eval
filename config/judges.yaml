@@ -43,6 +43,14 @@ judges:
     model: "claude-sonnet-5-5"
     effort: "low"
     max_tokens: 4096
+    # Content policy (task 2.14): these harmful items are never sent. Claude
+    # declined every cyber and bio item in the 2.12 gold check, and repeated
+    # flagged requests put the API account at risk. Skipped items get
+    # abstain_reason "skipped_by_policy:<why>" and no call is made. A harmful
+    # item with no severity_tier counts as tier 3.
+    skip:
+      severity_tiers: [3]
+      domains: ["cybersecurity", "biology"]
     access: "api"
     cost_per_1k_tokens: 0.003
     priority: 1
@@ -55,8 +63,32 @@ judges:
     family: gpt
     provider: "openai"
     model: "gpt-4o-2024-11-20"
+    # CBRN (tier 3) is graded by local judges only (task 2.14).
+    skip:
+      severity_tiers: [3]
     access: "api"
     cost_per_1k_tokens: 0.015
+    priority: 1
+    enabled: true
+
+  # Second non-Anthropic LLM judge (task 2.15): gpt-5.5-2026-04-23 is the only
+  # dated GPT-5.x flagship snapshot (OpenAI docs, checked 2026-10-14). It is a
+  # reasoning model: no temperature (null = not sent), explicit effort (the
+  # documented default), and max_tokens counts reasoning tokens. GPT-5.5 has
+  # bio/cyber safeguards with account-level blocks, so it skips tier 3 too.
+  # NOTE: gpt-4o-2024-11-20 above shuts down on 2027-01-14; finish every run
+  # that uses it before then.
+  - id: "gpt-5.5-2026-04-23"
+    family: gpt
+    provider: "openai"
+    model: "gpt-5.5-2026-04-23"
+    temperature: null
+    reasoning_effort: "medium"
+    max_tokens: 8000
+    skip:
+      severity_tiers: [3]
+    access: "api"
+    cost_per_1k_tokens: 0.03
     priority: 1
     enabled: true
 

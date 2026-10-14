@@ -30,6 +30,17 @@ def build_judge(entry: Dict, llamacpp_kwargs: Optional[Dict] = None) -> Judge:
     ``llamacpp_kwargs`` (from the hardware profile) are passed to local llama.cpp
     judges so they load their in-process engine with the right context settings.
     """
+    judge = _build(entry, llamacpp_kwargs)
+    skip = entry.get("skip") or {}
+    unknown = set(skip) - {"severity_tiers", "domains"}
+    if unknown:
+        raise ValueError(f"Judge {entry['id']!r}: unknown skip key(s) {sorted(unknown)}")
+    judge.skip_tiers = tuple(skip.get("severity_tiers") or ())
+    judge.skip_domains = tuple(skip.get("domains") or ())
+    return judge
+
+
+def _build(entry: Dict, llamacpp_kwargs: Optional[Dict]) -> Judge:
     provider = entry.get("provider")
     jid = entry["id"]
 
@@ -39,7 +50,8 @@ def build_judge(entry: Dict, llamacpp_kwargs: Optional[Dict] = None) -> Judge:
             options["use_batch"] = bool(entry["batch"])
         return ClaudeJudge(model=entry.get("model", CLAUDE_DEFAULT), judge_id=jid, **options)
     if provider == "openai":
-        options = {k: entry[k] for k in ("max_tokens", "temperature") if k in entry}
+        options = {k: entry[k] for k in ("max_tokens", "temperature", "reasoning_effort")
+                   if k in entry}
         return GPT4Judge(model=entry.get("model", OPENAI_DEFAULT), judge_id=jid, **options)
     if provider == "deterministic":
         judge = HeuristicJudge(refusal_votes=bool(entry.get("refusal_votes", False)))

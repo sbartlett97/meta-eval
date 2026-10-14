@@ -88,8 +88,8 @@ class JudgePanel:
 
     def _skip_verdict(self, judge: Judge, item: EvalItem) -> Optional[Verdict]:
         """An abstained "skipped" verdict if an exact deterministic check (a
-        format check) decides this item and this judge does not run it, else
-        None. Skipped judges neither outvote the exact check nor spend tokens
+        format check) decides this item and this judge does not run it, or if
+        the judge's content policy skips it; else None. Skipped judges neither outvote the exact check nor spend tokens
         on it (validation gap C12)."""
         if (
             self._has_exact_judge
@@ -103,6 +103,20 @@ class JudgePanel:
                 test_id=item.test_id,
                 rationale="Skipped: an exact deterministic check decides this item.",
                 abstained=True,
+            )
+        reason = judge.policy_skip_reason(item)
+        if reason is not None:
+            # No call is made: the judge's content policy (judges.yaml `skip:`)
+            # keeps this item away from its provider. Kept apart from
+            # "judge_declined", which is a real decline by the judge.
+            return Verdict(
+                verdict="AMBIGUOUS",
+                confidence=0.0,
+                judge_id=judge.id,
+                test_id=item.test_id,
+                rationale="Skipped by this judge's content policy.",
+                abstained=True,
+                abstain_reason=f"skipped_by_policy:{reason}",
             )
         return None
 

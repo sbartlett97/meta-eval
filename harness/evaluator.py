@@ -148,9 +148,22 @@ def run_evaluation(
             item_type=row.get("item_type") or "",  # "" -> inferred (judges/items.py)
             severity_tier=row.get("severity_tier"),
             reference_answer=row.get("reference_answer"),
+            domain=row.get("domain", ""),
         )
         for row in judged_rows
     ]
+    model_judges = [j for j in judges if j.provider != "deterministic"]
+    ungraded = sum(
+        1 for item in items
+        if model_judges and item.item_type in ("harmful_request", "jailbreak")
+        and all(j.policy_skip_reason(item) for j in model_judges)
+    )
+    if ungraded:
+        logger.warning(
+            "%d harmful item(s) are skipped by the content policy of every model judge "
+            "(judges.yaml `skip:`); they get no verdict. Add a local judge to grade them.",
+            ungraded,
+        )
     untiered = sum(
         1 for item in items
         if item.item_type in ("harmful_request", "jailbreak") and item.severity_tier not in (1, 2, 3)
