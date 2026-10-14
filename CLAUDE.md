@@ -63,6 +63,7 @@ judges/
   gpt4_judge.py        # OpenAI API judge
   local_llamacpp_judge.py # local in-process llama.cpp (GGUF) judge
   classifier_judges.py # HarmBench / WildGuard reference classifiers (own prompts, raw completion)
+  declines.py          # decline memory: never re-send a judge content it declined
   heuristic_judge.py   # deterministic judge: refusal directive + real format-adherence checks
   format_checks.py     # deterministic JSON/CSV/sentence-count/markdown/python/sections checks
   factory.py           # build judges from config/judges.yaml
@@ -191,6 +192,15 @@ docs/critical-assessment.md  # the audit this round of fixes addresses
   `skipped_by_policy` is not `judge_declined`: only a real decline counts in
   the decline rate. Do not send skipped content to a cloud judge in an ad-hoc
   test either.
+- **Decline memory (`judges/declines.py`).** Suite labels miss some harmful
+  content, so the policy above is not enough on its own. When a judge
+  declines an item, the evaluator records `(judge_id, sha256 of the request,
+  system prompt and response)` in `results/judge_declines.jsonl` (`--declines`;
+  hashes only, no content, local to this machine). Later runs skip that judge
+  on the same content (`skipped_by_policy:previously_declined`). Backfill
+  from old verdict files with `python judges/declines.py --outputs <outputs>
+  <verdicts...>`. `run_evaluation` has no default path (tests stay out of
+  `results/`); the CLI does.
 - **Exact checks decide exactly-checkable items.** When the panel has a judge
   with `runs_exact_checks` (the heuristic), every other judge skips items
   where `heuristic_judge.exact_check_applies` is true (format items with a

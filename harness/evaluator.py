@@ -46,6 +46,7 @@ from harness.env import load_env
 from harness.hydrate import hydrate_weights
 from harness.model_loader import ModelLoader
 from harness.test_runner import CheckpointMismatchError, TestRunner
+from judges.declines import DEFAULT_PATH as DEFAULT_DECLINES_PATH, DeclineRegistry
 from judges.factory import build_judges
 from judges import rubric
 from judges.judge_panel import EvalItem, JudgePanel, aggregate_verdicts
@@ -93,6 +94,7 @@ def run_evaluation(
     allow_legacy: bool = False,
     batch: bool = False,
     self_consistency: float = 0.0,
+    declines_path: Optional[str] = None,
 ) -> str:
     """Judge previously-generated model outputs; write verdicts. Returns the path.
 
@@ -101,6 +103,8 @@ def run_evaluation(
     predates the current schema raises :class:`LegacyOutputsError` unless
     ``allow_legacy`` is True. ``self_consistency`` (0-1) re-grades that share
     of rows with every non-deterministic judge (see :func:`_regrade_subset`).
+    ``declines_path`` is the decline memory (judges/declines.py): content a
+    judge declined before is skipped for it, and new declines are added.
     """
     judges = build_judges(
         judges_config, max_priority=max_priority, hardware_profile=hardware_profile,
@@ -113,7 +117,11 @@ def run_evaluation(
         for judge in judges:
             if judge.supports_batch:
                 judge.use_batch = True
-    panel = JudgePanel(judges)
+    registry = DeclineRegistry(declines_path) if declines_path else None
+    if registry is not None and len(registry):
+        logger.info("Decline memory: %d declined item(s) are never re-sent (%s)",
+                    len(registry), declines_path)
+    panel = JudgePanel(judges, decline_registry=registry)
     logger.info("Judge panel: %s", [j.id for j in judges])
 
     os.makedirs(os.path.dirname(verdicts_path) or ".", exist_ok=True)
@@ -374,6 +382,12 @@ def _cli(argv: Optional[List[str]] = None) -> int:
         "judge, to measure how often a judge agrees with itself.",
     )
     parser.add_argument(
+        "--declines",
+        default=DEFAULT_DECLINES_PATH,
+        help="Decline memory: a judge is never re-sent content it declined before "
+        "(judges/declines.py). Pass an empty string to switch it off.",
+    )
+    parser.add_argument(
         "--allow-legacy",
         action="store_true",
         help="Judge an outputs file that predates the current schema (no "
@@ -514,6 +528,7 @@ def _cli(argv: Optional[List[str]] = None) -> int:
             allow_legacy=args.allow_legacy,
             batch=args.batch,
             self_consistency=args.self_consistency,
+            declines_path=args.declines or None,
         )
     except LegacyOutputsError as exc:
         logger.error("%s", exc)
