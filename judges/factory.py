@@ -6,12 +6,14 @@ by editing YAML (PRD "Easier scaling -- add/remove judges without code changes")
 
 from __future__ import annotations
 
+import os
 from typing import Dict, Iterable, List, Optional
 
 import yaml
 
 from harness import llamacpp_engine
 from judges.base import Judge
+from judges.classifier_judges import HarmBenchJudge, WildGuardJudge
 from judges.claude_judge import DEFAULT_MODEL as CLAUDE_DEFAULT, ClaudeJudge
 from judges.gpt4_judge import DEFAULT_MODEL as OPENAI_DEFAULT, GPT4Judge
 from judges.heuristic_judge import HeuristicJudge
@@ -58,6 +60,23 @@ def _build(entry: Dict, llamacpp_kwargs: Optional[Dict]) -> Judge:
         judge.id = jid  # the configured id, like every other judge
         return judge
 
+    classifier = entry.get("classifier")
+    if classifier is not None:
+        cls = _CLASSIFIERS.get(classifier)
+        if cls is None:
+            raise ValueError(f"Judge {jid!r}: unknown classifier {classifier!r}; "
+                             f"expected one of {sorted(_CLASSIFIERS)}")
+        spec = local_llamacpp_spec(entry) or (None, None, None)
+        model_path = entry.get("model_path")
+        return cls(
+            judge_id=jid,
+            model_id=spec[0],
+            gguf_file=spec[1],
+            model_path=os.path.expanduser(model_path) if model_path else None,
+            additional_files=spec[2],
+            engine_kwargs=dict(llamacpp_kwargs or {}),
+        )
+
     spec = local_llamacpp_spec(entry)
     if spec is not None:
         repo, gguf_file, additional_files = spec
@@ -76,6 +95,10 @@ def _build(entry: Dict, llamacpp_kwargs: Optional[Dict]) -> Judge:
         "serving.gguf_file) or the flat shape (access: llamacpp + model + "
         "gguf_file)."
     )
+
+
+#: Published classifiers with their own fixed prompt (judges/classifier_judges.py).
+_CLASSIFIERS = {"harmbench": HarmBenchJudge, "wildguard": WildGuardJudge}
 
 
 def local_llamacpp_spec(entry: Dict) -> Optional[tuple]:

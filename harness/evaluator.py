@@ -72,11 +72,12 @@ def require_credentials(judges) -> None:
     verdict on every row and the run still exits 0 -- the panel silently loses
     its model-independent anchor.
     """
-    missing = [f"{j.id} (needs {j.credential_env})" for j in judges if not j.has_credentials()]
+    missing = [f"{j.id} ({j.missing_requirement()})" for j in judges if j.missing_requirement()]
     if missing:
         raise MissingCredentialsError(
-            "Judge(s) without credentials: " + ", ".join(missing)
-            + ". Set the variable(s) in the environment or in .env, or disable those judges."
+            "Judge(s) not ready: " + ", ".join(missing)
+            + ". Set API keys in the environment or in .env, create the missing files, "
+            "or disable those judges."
         )
 
 

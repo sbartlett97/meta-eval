@@ -347,6 +347,15 @@ class LlamaCppEngine:
             except Exception as exc:  # noqa: BLE001 - best-effort teardown
                 logger.warning("Error closing llama.cpp engine %s: %s", self.key, exc)
 
+    def truncate_tokens(self, text: str, max_tokens: int) -> str:
+        """``text`` cut to its first ``max_tokens`` tokens (this model's
+        tokenizer, no BOS). Used by classifiers trained on truncated inputs."""
+        self._ensure_loaded()
+        tokens = self._llm.tokenize(text.encode("utf-8"), add_bos=False)
+        if len(tokens) <= max_tokens:
+            return text
+        return self._llm.detokenize(tokens[:max_tokens]).decode("utf-8", errors="ignore")
+
     def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str:
         """Run a single raw-completion prompt and return its text.
 

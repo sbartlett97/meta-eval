@@ -136,6 +136,11 @@ class Judge(ABC):
         """True if this judge can authenticate (always True when it needs nothing)."""
         return True
 
+    def missing_requirement(self) -> Optional[str]:
+        """What this judge needs before a run can use it, or None. The
+        evaluator stops before any work when a judge reports one."""
+        return None if self.has_credentials() else f"needs {self.credential_env}"
+
     def describe(self) -> dict:
         """Settings that identify this judge, for verdict-file provenance.
         Subclasses add their model id and sampling settings."""
