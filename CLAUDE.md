@@ -121,7 +121,10 @@ docs/critical-assessment.md  # the audit this round of fixes addresses
   fallbacks off (D4): a decline is `abstained` with
   `abstain_reason="judge_declined:<category>"`. The OpenAI judge is pinned to
   `gpt-4o-2024-11-20`. Verdict provenance records `rubric_version` and
-  `rubric_sha256`. `judges/heuristic_judge.py` reads the raw criteria for its
+  `rubric_sha256`. Rubric 2.1.0 is **frozen** (task 2.12):
+  `tests/test_rubric.py::test_rubric_is_frozen` pins its version and hash.
+  Any rubric edit needs a version bump and a new gold check
+  (`harness/gold.py`). `judges/heuristic_judge.py` reads the raw criteria for its
   own deterministic dispatch.
 - **Loading is lazy and import-light.** Constructing a `LlamaCppModel`, a judge,
   or a `LlamaCppEngine` must NOT import `llama_cpp` or load weights — that only
