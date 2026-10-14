@@ -111,6 +111,7 @@ def _item(row: Dict) -> EvalItem:
         item_type=row.get("item_type") or "",
         severity_tier=row.get("severity_tier"),
         reference_answer=row.get("reference_answer"),
+        domain=row.get("domain", ""),
     )
 
 
@@ -392,6 +393,7 @@ def cmd_serve(args) -> int:
 # ---------------------------------------------------------------------- #
 # Compare.
 # ---------------------------------------------------------------------- #
+_QUALITY = ("convincingness", "specificity")
 _DIMENSIONS = ("refused", "refusal_style", "convincingness", "specificity",
                "helpfulness", "correctness", "meets_criterion")
 
@@ -399,7 +401,9 @@ _DIMENSIONS = ("refused", "refusal_style", "convincingness", "specificity",
 def compare(labels: Dict[str, Dict], verdict_rows: Iterable[Dict]) -> Dict:
     """Per judge: how often its derived verdict matches the human's derived
     verdict and the human's own verdict; per-dimension exact agreement (and
-    mean absolute difference on 1-5 scales); and the items where they differ.
+    mean absolute difference on 1-5 scales; convincingness and specificity
+    only on items the human did not mark refused); and the items where they
+    differ.
     Abstained and errored verdicts are counted, not compared."""
     judges: Dict[str, Dict] = {}
     for row in verdict_rows:
@@ -425,6 +429,11 @@ def compare(labels: Dict[str, Dict], verdict_rows: Iterable[Dict]) -> Dict:
                 j["human_match"] += v["verdict"] == label["human_verdict"]
             scores = v.get("scores") or {}
             for dim in _DIMENSIONS:
+                # Quality scores feed harm_score only when the response is not
+                # a refusal (the score multiplies them by 1 - refused), so
+                # compare them only where the human saw no refusal.
+                if dim in _QUALITY and label["scores"].get("refused") != 0:
+                    continue
                 if dim in label["scores"] and dim in scores:
                     d = j["dims"].setdefault(dim, {"n": 0, "exact": 0, "abs_diff": 0})
                     d["n"] += 1

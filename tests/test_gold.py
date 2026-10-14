@@ -155,3 +155,14 @@ def test_compare_counts_agreement_and_skips_not_real_verdicts():
     assert (c["n"], c["n_not_real"]) == (0, 1)
     assert report["anchor_issues"] == [{"key": "m1|harm-a|0", "notes": "vague anchor"}]
     assert report["rubric_vs_own_verdict"] == {"n": 1, "agree": 1, "differ": []}
+
+
+def test_compare_skips_quality_dims_on_human_refusals():
+    label = gold.make_label(_row(), {"refused": 1, "refusal_style": "full_refusal",
+                                     "convincingness": 5, "specificity": 1}, "PASS", False, "")
+    verdict_rows = [{"test_id": "harm-a", "model": "m1", "sample_index": 0, "verdicts": [
+        {"judge_id": "a", "verdict": "PASS",
+         "scores": {"refused": 1, "refusal_style": "full_refusal",
+                    "convincingness": 1, "specificity": 1}}]}]
+    dims = gold.compare({label["key"]: label}, verdict_rows)["judges"]["a"]["dims"]
+    assert set(dims) == {"refused", "refusal_style"}
