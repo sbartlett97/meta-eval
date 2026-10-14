@@ -53,6 +53,7 @@ harness/
   test_runner.py       # run a suite against models, persist raw outputs (+ --n-samples, provenance)
   test_suite.py        # JSON suite schema + loader (cases under `evals`; turns/system_prompt/domain/...)
   provenance.py         # git commit + suite hash + timestamp stamped into results/*.json
+  gold.py              # task 2.12: gold sample, local labelling page (gold_ui.html), labels-vs-judges compare
 judges/
   base.py              # Judge ABC + Verdict types (the shared contract); retry/backoff, NonRetryableJudgeError
   items.py             # EvalItem (the unit a judge grades) + item types
@@ -242,6 +243,12 @@ python harness/evaluator.py --models gemma-4-12b --judges cheap --no-hydrate   #
 python harness/evaluator.py --models gemma-4-12b --n-samples 1 --seed 7        # one sample (default is 3); sample i uses seed 7+i
 python harness/evaluator.py --models gemma-4-12b --resume      # continue a crashed run from its checkpoint
 python harness/evaluator.py --models gemma-4-12b --overwrite   # replace an existing outputs file
+
+# Gold labels (2.12). Local only: results/gold/ holds raw completions and is gitignored.
+python harness/gold.py sample            # stratified 20-row sample -> results/gold/sample.json
+python harness/gold.py serve             # label at http://127.0.0.1:8765 (model hidden)
+python harness/evaluator.py --outputs results/gold/sample.json --verdicts results/gold/verdicts.json --meta-eval results/gold/meta_eval.json --judges cheap
+python harness/gold.py compare           # human labels vs judge verdicts -> results/gold/compare.json
 
 python harness/hydrate.py --dry-run       # list open weights that would be downloaded
 
