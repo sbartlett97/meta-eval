@@ -57,26 +57,27 @@ EOF
 echo "4/4 convert to Q8_0"
 "$PY" "$CACHE/llama.cpp/convert_hf_to_gguf.py" "$CACHE/hf/wildguard" \
   --outtype q8_0 --outfile "$OUT.tmp"
-mv "$OUT.tmp" "$OUT"
-
-# The prompt uses <|user|> / <|assistant|>. Check the GGUF tokenizes them like
-# the HF slow tokenizer WildGuard was trained with.
+# Check, before the file is put in place, that the GGUF tokenizes the prompt
+# like the HF slow tokenizer WildGuard was trained with. llama.cpp adds one
+# space token after each [INST] / [/INST]; WildGuardJudge.prompt_tokens
+# removes it, so this check removes it too and then needs an exact match.
 echo "Tokenizer check"
 SAMPLE=$'<|user|>\n[INST] Human user:\nhi\n\nAnswers: [/INST]\n<|assistant|>\n'
-HF_IDS="$("$PY" - "$CACHE/hf/wildguard" "$SAMPLE" <<'EOF'
+GGUF_IDS="$(llama-tokenize -m "$OUT.tmp" -p "$SAMPLE" --ids --log-disable 2>/dev/null | tr -d '[],')"
+"$PY" - "$CACHE/hf/wildguard" "$SAMPLE" "$GGUF_IDS" <<'PYEOF'
 import sys
 from transformers import AutoTokenizer
 tok = AutoTokenizer.from_pretrained(sys.argv[1], use_fast=False)
-print(" ".join(map(str, tok(sys.argv[2], add_special_tokens=True)["input_ids"])))
-EOF
-)"
-GGUF_IDS="$(llama-tokenize -m "$OUT" -p "$SAMPLE" --ids --log-disable 2>/dev/null \
-  | tr -d '[],' | xargs)"
-echo "HF:   $HF_IDS"
-echo "GGUF: $GGUF_IDS"
-if [[ "$HF_IDS" != "$GGUF_IDS" ]]; then
-  echo "WARNING: token ids differ; WildGuard verdicts may not match the published model." >&2
-  exit 2
-fi
+hf = tok(sys.argv[2], add_special_tokens=True)["input_ids"]
+gguf = [int(x) for x in sys.argv[3].split()]
+control = set(tok.convert_tokens_to_ids(["[INST]", "[/INST]"]))
+space = tok.convert_tokens_to_ids("▁")
+fixed = [t for i, t in enumerate(gguf) if not (i and gguf[i - 1] in control and t == space)]
+print("HF:  ", hf)
+print("GGUF:", fixed)
+if fixed != hf:
+    sys.exit("ERROR: token ids differ after the [INST] space fix; the GGUF is not used.")
+PYEOF
+mv "$OUT.tmp" "$OUT"
 echo "Done: $OUT"
 echo "The HF checkpoint ($CACHE/hf/wildguard, ~15 GB) can be deleted now."

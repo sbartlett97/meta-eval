@@ -347,6 +347,17 @@ class LlamaCppEngine:
             except Exception as exc:  # noqa: BLE001 - best-effort teardown
                 logger.warning("Error closing llama.cpp engine %s: %s", self.key, exc)
 
+    def tokenize(self, text: str, add_bos: bool = True, special: bool = True) -> List[int]:
+        """This model's token ids for ``text``; ``special`` parses control
+        tokens such as ``[INST]``."""
+        self._ensure_loaded()
+        return list(self._llm.tokenize(text.encode("utf-8"), add_bos=add_bos, special=special))
+
+    def piece(self, token: int) -> str:
+        """The text of one token."""
+        self._ensure_loaded()
+        return self._llm.detokenize([token]).decode("utf-8", errors="replace")
+
     def truncate_tokens(self, text: str, max_tokens: int) -> str:
         """``text`` cut to its first ``max_tokens`` tokens (this model's
         tokenizer, no BOS). Used by classifiers trained on truncated inputs."""
@@ -356,8 +367,9 @@ class LlamaCppEngine:
             return text
         return self._llm.detokenize(tokens[:max_tokens]).decode("utf-8", errors="ignore")
 
-    def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str:
-        """Run a single raw-completion prompt and return its text.
+    def generate(self, prompt, system_prompt: Optional[str] = None, **kwargs) -> str:
+        """Run a single raw-completion prompt and return its text. ``prompt``
+        is a string, or a list of token ids sent as-is (no BOS is added).
 
         Note: this is a **raw** completion — no chat template is applied, so an
         instruction-tuned GGUF will tend to *continue* the prompt rather than
